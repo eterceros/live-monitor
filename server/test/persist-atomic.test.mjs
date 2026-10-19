@@ -1,9 +1,10 @@
 import './isolate.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, mkdirSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, mkdirSync, cpSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { readTasksFileMerged } from '../src/splitfmt.js';
 import { fileURLToPath } from 'node:url';
 import { DATA_DIR } from './isolate.mjs';
 import { tempDir } from './teardown.mjs';
@@ -16,7 +17,7 @@ const { writeChunksAtomic, writeAtomicSync, objectChunks, SerCache } = await imp
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FILE = path.join(DATA_DIR, 'tasks.json');
-const onDisk = () => JSON.parse(readFileSync(FILE, 'utf8'));
+const onDisk = () => readTasksFileMerged(FILE);
 /** What memory says the file must hold: the same JSON round trip the writer does. */
 const inMemory = () => Object.fromEntries(Object.values(store.tasks)
   .filter((t) => t.project === 'hfs').map((t) => [t.issue, JSON.parse(JSON.stringify(t))]));
@@ -67,9 +68,9 @@ test('ida y vuelta: cargar -> mutar -> flush -> cargar da lo mismo que memoria',
   // quedan idénticos, y un segundo arranque ya no cambia nada.
   const dir = tempDir('hfsmon-persist-rt-');
   const copy = path.join(dir, 'tasks.json');
-  copyFileSync(FILE, copy);
+  cpSync(DATA_DIR, dir, { recursive: true });   // main file and taskdata/
   assert.equal((await runChild(dir, 'boot')).code, 0);
-  const boot1 = JSON.parse(readFileSync(copy, 'utf8'));
+  const boot1 = readTasksFileMerged(copy);
   const orig = onDisk();
   assert.deepEqual(Object.keys(boot1), Object.keys(orig));
   for (const [k, t] of Object.entries(orig)) {
@@ -79,7 +80,7 @@ test('ida y vuelta: cargar -> mutar -> flush -> cargar da lo mismo que memoria',
     for (const [f, v] of Object.entries(t)) if (f !== 'log' && f !== 'chats') assert.deepEqual(boot1[k][f], v, `${f} de ${k}`);
   }
   assert.equal((await runChild(dir, 'boot')).code, 0);
-  assert.deepEqual(JSON.parse(readFileSync(copy, 'utf8')), boot1, 'segundo arranque: punto fijo');
+  assert.deepEqual(readTasksFileMerged(copy), boot1, 'segundo arranque: punto fijo');
 });
 
 test('el texto de la caché es el de JSON.stringify del objeto entero', () => {
@@ -120,6 +121,37 @@ test('una mutación que NO pasa por persist(task) acaba guardada igualmente', as
   await store.flushAsync();
   assert.equal(onDisk()['5'].title, 'tercera');
   assert.deepEqual(onDisk(), inMemory());
+});
+
+test('cambios silenciosos en log y mensajes (push, splice, reemplazo) también se encuentran y se guardan', async () => {
+  const t = store.get(8);
+  await store.flushAsync();
+  assert.deepEqual(await store.sweep(), [], 'nada se mueve: el barrido no inventa');
+
+  t.log.push({ ts: 'x', phase: 'silencio', line: 'solo log, sin persist' });           // an append nobody announced
+  assert.deepEqual(await store.sweep(), ['hfs#8']);
+  await store.flushAsync();
+  assert.equal(onDisk()['8'].log.at(-1).phase, 'silencio');
+
+  t.chats[0].messages.splice(0, 5);                                                  // a removal nobody announced
+  assert.deepEqual(await store.sweep(), ['hfs#8']);
+  await store.flushAsync();
+  assert.equal(onDisk()['8'].chats[0].messages.length, t.chats[0].messages.length);
+
+  t.chats[0].messages[3] = { id: 'reemplazo', role: 'user', text: 'otro objeto', ts: 'x' };   // a replacement
+  assert.deepEqual(await store.sweep(), ['hfs#8']);
+  await store.flushAsync();
+  assert.equal(onDisk()['8'].chats[0].messages[3].id, 'reemplazo');
+
+  t.chats[0].messages[4].text = 'editado en sitio';                                     // an in-place edit
+  assert.deepEqual(await store.sweep(), ['hfs#8']);
+  await store.flushAsync();
+  assert.equal(onDisk()['8'].chats[0].messages[4].text, 'editado en sitio');
+  assert.deepEqual(onDisk(), inMemory());
+
+  t.log.push({ ts: 'y', phase: 'salida', line: 'y esta, sin barrido, la guarda el flush de salida' });
+  store.flush();
+  assert.equal(onDisk()['8'].log.at(-1).phase, 'salida');
 });
 
 test('ráfaga de 1000 addLog+touch mientras se escribe: el disco acaba igual que la memoria', async () => {
@@ -172,14 +204,16 @@ test('writeChunksAtomic: un fallo o un descarte deja intacto el archivo y sin te
 });
 
 test('apagado en mitad de escritura (kill -9): el archivo nunca queda truncado ni corrupto', async () => {
-  const names = readdirSync(DATA_DIR).filter((n) => /^tasks.*\.json$/.test(n));
   const expectedIssues = Object.keys(onDisk()).length;
   let killedMidWrite = 0;
   const ROUNDS = 12;
   for (let round = 0; round < ROUNDS; round++) {
     const dir = tempDir('hfsmon-persist-kill-');
-    for (const n of names) copyFileSync(path.join(DATA_DIR, n), path.join(dir, n));
-    const tmp = path.join(dir, 'tasks.json.tmp');
+    cpSync(DATA_DIR, dir, { recursive: true });
+    const tmpDirs = [dir, path.join(dir, 'taskdata', 'tasks')];
+    const midWrite = () => tmpDirs.some((d) => {
+      try { return readdirSync(d).some((n) => n.endsWith('.tmp') && statSync(path.join(d, n)).size > 0); } catch { return false; }
+    });
     let started = false;
     await runChild(dir, 'hammer', {
       onLine: (child, buf) => {
@@ -187,15 +221,13 @@ test('apagado en mitad de escritura (kill -9): el archivo nunca queda truncado n
         started = true;
         // Hunt for the moment a temp file is being written, then kill that instant.
         const hunt = setInterval(() => {
-          let size = -1;
-          try { size = statSync(tmp).size; } catch { /* not there */ }
-          if (size > 0) { clearInterval(hunt); clearTimeout(giveUp); killedMidWrite += 1; child.kill('SIGKILL'); }
+          if (midWrite()) { clearInterval(hunt); clearTimeout(giveUp); killedMidWrite += 1; child.kill('SIGKILL'); }
         }, 1);
         const giveUp = setTimeout(() => { clearInterval(hunt); child.kill('SIGKILL'); }, 1500);
       },
     });
     // Whatever the moment: the real file is a whole, parseable JSON with every task.
-    const parsed = JSON.parse(readFileSync(path.join(dir, 'tasks.json'), 'utf8'));
+    const parsed = readTasksFileMerged(path.join(dir, 'tasks.json'));
     assert.equal(Object.keys(parsed).length, expectedIssues, `ronda ${round}: faltan tareas`);
     for (const t of Object.values(parsed)) assert.ok(t.log.length >= 400 && t.chats[0].messages.length >= 100, `ronda ${round}: tarea truncada`);
   }

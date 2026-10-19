@@ -28,15 +28,21 @@ const CHUNK_CHARS = 1 << 20;
 /** A sweep slice never holds the event loop longer than this (ms), give or take one entry. */
 const SLICE_BUDGET_MS = 8;
 
-/** Cache of `JSON.stringify(obj)` per object (by identity). */
+/** Cache of `serialize(obj)` (default `JSON.stringify`) per object, by identity. */
 export class SerCache {
   #texts = new WeakMap();
+  #serialize;
 
-  /** The compact JSON of `obj`, reused until `invalidate(obj)`. */
+  constructor(serialize = JSON.stringify) {
+    this.#serialize = serialize;
+  }
+
+  /** The compact JSON of `obj`, reused until `invalidate(obj)`. Non-objects are never cached. */
   text(obj) {
+    if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
     let s = this.#texts.get(obj);
     if (s === undefined) {
-      s = JSON.stringify(obj);
+      s = this.#serialize(obj);
       this.#texts.set(obj, s);
     }
     return s;
@@ -97,7 +103,7 @@ export class SerCache {
   #checkOne(obj) {
     const cached = this.#texts.get(obj);
     if (cached === undefined) return false;
-    if (JSON.stringify(obj) === cached) return false;
+    if (this.#serialize(obj) === cached) return false;
     this.#texts.delete(obj);
     return true;
   }
@@ -107,24 +113,40 @@ export class SerCache {
  * The text of `{ "<key>": <value>, … }` as a list of pieces (~1 MB each), each
  * value from the cache. `prefix`/`suffix` wrap the object (`{"version":1,"holders":` … `}`).
  *
- * @param {SerCache} cache
+ * @param {SerCache | ((value: object, key: string) => string)} cache where each value's text comes from.
  * @param {[string, object][]} entries in the order they must appear.
  */
 export function objectChunks(cache, entries, { prefix = '', suffix = '' } = {}) {
-  const chunks = [];
-  let buf = `${prefix}{`;
+  const textOf = typeof cache === 'function' ? cache : (v) => cache.text(v);
+  const out = new ChunkBuilder();
+  out.add(`${prefix}{`);
   let first = true;
   for (const [key, value] of entries) {
-    buf += `${first ? '' : ','}${JSON.stringify(key)}:${cache.text(value)}`;
+    out.add(`${first ? '' : ','}${JSON.stringify(key)}:${textOf(value, key)}`);
     first = false;
-    if (buf.length >= CHUNK_CHARS) {
-      chunks.push(buf);
-      buf = '';
+  }
+  out.add(`}${suffix}`);
+  return out.done();
+}
+
+/** Collects text into pieces of ~1 MB, the unit the writers hand to the file. */
+export class ChunkBuilder {
+  #chunks = [];
+  #buf = '';
+
+  add(text) {
+    this.#buf += text;
+    if (this.#buf.length >= CHUNK_CHARS) {
+      this.#chunks.push(this.#buf);
+      this.#buf = '';
     }
   }
-  buf += `}${suffix}`;
-  chunks.push(buf);
-  return chunks;
+
+  done() {
+    if (this.#buf || !this.#chunks.length) this.#chunks.push(this.#buf);
+    this.#buf = '';
+    return this.#chunks;
+  }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

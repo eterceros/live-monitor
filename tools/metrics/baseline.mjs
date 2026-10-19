@@ -21,6 +21,8 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { summarize, tasksOf, toMarkdown } from './lib.mjs';
+// Pure (only node:*): puts a task's log back when the board has split it into taskdata/.
+import { readTasksFileMerged } from '../../server/src/splitfmt.js';
 
 const TASKS_FILE_RE = /^tasks(\.[a-z0-9][a-z0-9-]*)?\.json$/;
 // The store ignores this old file of the default project (its tasks live in
@@ -63,7 +65,7 @@ if (!files.length) die(`No tasks.json in ${dir}`);
 
 const load = (f) => {
   try {
-    return tasksOf(JSON.parse(readFileSync(path.join(dir, f), 'utf8')));
+    return tasksOf(readTasksFileMerged(path.join(dir, f)));
   } catch (e) {
     if (e instanceof SyntaxError) die(`${f} changed while reading (the board may be writing it): ${e.message}. Retry.`);
     return die(`Cannot read ${f}: ${e.message}`);

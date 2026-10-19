@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { readFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, config } from './config.js';
 import { migrateTask } from './mode.js';
@@ -11,6 +11,9 @@ import { requireProject } from './machine.js';
 import { metricsHooks } from './metrics.js';
 import { DEFAULT_PROJECT_ID, coerceKey, isProjectId, keyOf, tasksFileOf } from './keys.js';
 import { SerCache, objectChunks, writeAtomicSync, writeChunksAtomic } from './persistcache.js';
+import {
+  SPLIT_MARK, coreText, heavyChunks, heavyItems, heavyPath, mergeHeavy, readHeavy, quarantine, ensureHeavyDir, backupOnce, scopeOf,
+} from './splitfmt.js';
 
 /**
  * One tasks file per project, the union in one object.
@@ -24,9 +27,16 @@ import { SerCache, objectChunks, writeAtomicSync, writeChunksAtomic } from './pe
  *
  * In memory, tasks are indexed by the canonical key `<project>#<issue>`. On
  * disk, each project's file keeps the shape it has always had — `{ "<issue>":
- * task }` — so today's `tasks.json` is adopted as is, with no migration and no
- * rewrite. The only addition is `project` on every task, stamped at load time
- * because `keyOf` refuses a task without one.
+ * task }` — and a file in that shape is adopted as is. The one addition is
+ * `project` on every task, stamped at load time because `keyOf` refuses a task
+ * without one.
+ *
+ * What a task's entry holds is split: its `log` and the `messages` of its chats
+ * (90% of the bytes, and what grows) live in `taskdata/<file>/<issue>.json`
+ * (`splitfmt.js`), the entry keeps a `persistSplit` marker. Nothing else sees
+ * the difference — in memory `task.log` and `chat.messages` are what they were —
+ * and the first write of a file still in the old shape backs it up (`.pre-split.bak`,
+ * never overwritten) before converting it.
  */
 const MAX_LOG_LINES = 3000;
 // A burst of tool events becomes one write. The files are tens of MB, so the
@@ -117,17 +127,39 @@ export function migrateChatModels(task, available, _log) {
   }
 }
 
+/** Whether the file already holds exactly these pieces (so it need not be written). */
+function sameAsFile(file, chunks) {
+  try {
+    const text = chunks.join('');
+    return statSync(file).size === Buffer.byteLength(text) && readFileSync(file, 'utf8') === text;
+  } catch {
+    return false;
+  }
+}
+
 class Store extends EventEmitter {
   /** Project ids with changes not yet on disk. */
   #dirty = new Set();
   /** projectId → { orphans }. Its keys are the projects this store writes. */
   #projects = new Map();
   #timer = null;
-  /** JSON text per task, so a write re-serializes only what changed. */
-  #ser = new SerCache();
+  /** Text of each task's entry in the main file (its core: everything but log and messages). */
+  #coreSer = new SerCache(coreText);
+  /** Text of each log line and message, so a write re-serializes only what changed. */
+  #itemSer = new SerCache();
+  /** Keys of the tasks whose heavy part (log, messages) is not on disk yet. */
+  #heavyDirty = new Set();
+  /** Projects whose file on disk is still the old, single-file format. */
+  #legacy = new Set();
+  /** Projects whose migration failed: they keep being written in the old format. */
+  #noSplit = new Set();
+  /** The first flush: sidecars equal to what is on disk are not rewritten. */
+  #bootFlush = false;
+  /** Length each array had when it was serialized (to notice a silent push/splice). */
+  #lens = new WeakMap();
   /** An async write is running; the next one waits for it. */
   #writing = false;
-  /** projectId → sequence of the newest write started / landed (stale async writes are dropped). */
+  /** file → sequence of the newest write started / landed (stale async writes are dropped). */
   #seqStarted = new Map();
   #seqLanded = new Map();
   #sweepTimer = null;
@@ -212,7 +244,12 @@ class Store extends EventEmitter {
       }
     }
     for (const projectId of this.#projects.keys()) this.#dirty.add(projectId);
+    // The boot fix-ups above may have touched any task: its heavy part is
+    // compared with the file (and rewritten only if different) by this first flush.
+    for (const key of Object.keys(this.tasks)) this.#heavyDirty.add(key);
+    this.#bootFlush = true;
     this.flush();
+    this.#bootFlush = false;
 
     // A kill leaves the last burst unwritten otherwise. `beforeExit` covers the
     // ordinary end, the signals cover the way this board is actually stopped.
@@ -262,6 +299,7 @@ class Store extends EventEmitter {
     // A half-written file still throws here, as it always has: the board
     // refusing to boot is better than one silently missing its tasks.
     const raw = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) ?? {} : {};
+    let legacy = false;
     for (const [fileKey, task] of Object.entries(raw)) {
       if (!task || typeof task !== 'object') { orphans[fileKey] = task; continue; }
       task.project = projectId;
@@ -271,7 +309,29 @@ class Store extends EventEmitter {
         orphans[fileKey] = task;
         continue;
       }
+      if (task[SPLIT_MARK]) this.#loadHeavy(file, fileKey, task); else legacy = true;
       this.tasks[key] = task;
+    }
+    if (legacy) this.#legacy.add(projectId);
+  }
+
+  /**
+   * Puts a split task's log and messages back from its sidecar. A sidecar that
+   * is missing or unreadable is reported, never papered over: an unreadable one
+   * is moved aside (so the next write cannot overwrite it) and the task starts
+   * with no history; the `.pre-split.bak` left at migration still has it.
+   */
+  #loadHeavy(file, fileKey, task) {
+    const r = readHeavy(DATA_DIR, scopeOf(file), fileKey);
+    if (!r.ok) {
+      const aside = r.reason === 'corrupt' ? quarantine(r.file) : null;
+      console.error(`[store] ${file}: la tarea ${fileKey} está dividida pero ${r.file} está ${r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); movido a ${aside}`}; arranca sin historial (la copia .pre-split.bak lo conserva)`);
+      delete task[SPLIT_MARK];
+      return;
+    }
+    const lost = mergeHeavy(task, r.heavy);
+    if (lost.log || lost.chats.length) {
+      console.error(`[store] ${file}: la tarea ${fileKey} perdió en ${r.file}: ${lost.log ? 'el log ' : ''}${lost.chats.length ? `mensajes de ${lost.chats.join(', ')}` : ''}`);
     }
   }
 
@@ -292,15 +352,21 @@ class Store extends EventEmitter {
    *
    * Coalescing costs nothing in practice: the in-memory state is the truth for
    * every reader, the events still fire immediately, and the only thing at risk
-   * is the last few milliseconds if the process is killed outright — which is
-   * why exit flushes.
+   * is the last few seconds if the process is killed outright — which is why
+   * exit flushes.
+   *
+   * `hint` is `'append'` only from the callers that know exactly what they
+   * changed — a log line or a chat message added, one message patched — so the
+   * log lines and messages already serialized are kept. Any other call (no hint)
+   * distrusts everything the task has and serializes it again.
    */
-  persist(task = null) {
+  persist(task = null, hint = null, changed = null) {
     if (task?.kind === 'project') {
-      this.#holderPersister?.(task);
+      this.#holderPersister?.(task, hint, changed);
       return;
     }
-    this.#markDirty(task);
+    if (changed) this.#itemSer.invalidate(changed);
+    this.#markDirty(task, hint !== 'append');
     if (this.#timer) return;
     this.#arm(PERSIST_DELAY_MS);
   }
@@ -314,40 +380,151 @@ class Store extends EventEmitter {
     this.#timer.unref?.();
   }
 
+  #keyOfTask(task) {
+    try { return keyOf(task); } catch { return `${task.project}#${task.issue}`; }
+  }
+
   /**
    * Which files the next write has to touch. A change carries the task it
-   * happened to, so only that project's file is rewritten; `store.persist()`
-   * with nothing in hand cannot tell, so it marks every project.
+   * happened to, so only that project's file (and that task's data file) is
+   * rewritten; `store.persist()` with nothing in hand cannot tell, so it marks
+   * every project and every task.
    */
-  #markDirty(task) {
+  #markDirty(task, full = true) {
     const projectId = task && isProjectId(task.project) ? task.project : null;
-    // Its cached JSON is stale from this moment; the next write serializes it
-    // again. Without a task, nothing can be trusted: everything is serialized.
-    if (task) this.#ser.invalidate(task); else this.#ser.invalidateAll();
+    if (task) {
+      // Its cached text is stale from this moment; the next write serializes it again.
+      this.#coreSer.invalidate(task);
+      if (full) for (const item of heavyItems(task)) this.#itemSer.invalidate(item);
+      this.#heavyDirty.add(this.#keyOfTask(task));
+    }
     if (projectId) {
       this.#project(projectId);
       this.#dirty.add(projectId);
       return;
     }
+    // Without a (valid) task nothing can be trusted: everything is serialized again.
+    this.#coreSer.invalidateAll();
+    this.#itemSer.invalidateAll();
+    for (const key of Object.keys(this.tasks)) this.#heavyDirty.add(key);
     for (const id of this.#projects.keys()) this.#dirty.add(id);
   }
 
-  /**
-   * The file of each project in `ids` as pieces of text. Each file gets back
-   * the shape it was read in, `{ "<issue>": task }`, orphans included.
-   */
-  #chunksOf(ids) {
-    // One pass over the union, not one per project.
-    const files = new Map(ids.map((id) => [id, { ...(this.#projects.get(id)?.orphans ?? {}) }]));
+  /** `<project>`'s main file as pieces: orphans first, then its tasks, in `JSON.stringify` order. */
+  #coreChunks(projectId, { plain = false } = {}) {
+    const orphans = this.#projects.get(projectId)?.orphans ?? {};
+    const out = { ...orphans };
     for (const task of Object.values(this.tasks)) {
-      const out = files.get(task.project);
-      if (out) out[task.issue] = task;
+      if (task.project === projectId) out[task.issue] = task;
     }
-    return new Map([...files].map(([id, out]) => [id, objectChunks(this.#ser, Object.entries(out))]));
+    const raw = new Set(Object.values(orphans));
+    // Orphans are written back untouched; `plain` is the old one-file format.
+    const textOf = (v) => (plain || v === null || typeof v !== 'object' || raw.has(v) ? JSON.stringify(v) : this.#coreSer.text(v));
+    return objectChunks(textOf, Object.entries(out));
+  }
+
+  #heavyFile(task) {
+    return heavyPath(DATA_DIR, scopeOf(tasksFile(task.project)), task.issue);
+  }
+
+  /** `task`'s log and messages as pieces; also remembers how long each array was. */
+  #heavyOf(task) {
+    const chunks = heavyChunks(task, (item) => this.#itemSer.text(item));
+    for (const arr of this.#arraysOf(task)) this.#lens.set(arr, arr.length);
+    return chunks;
+  }
+
+  *#arraysOf(task) {
+    if (Array.isArray(task.log)) yield task.log;
+    for (const chat of Array.isArray(task.chats) ? task.chats : []) {
+      if (chat && Array.isArray(chat.messages)) yield chat.messages;
+    }
   }
 
   /**
-   * Writes every dirty project's file now, synchronously. For the way out
+   * A task's heavy part is not what was last written: an array longer or shorter
+   * than when it was serialized, a new array, or an item nobody serialized — a
+   * change `persist` was never told about, and that no cached text can show.
+   */
+  #shapeMoved(task) {
+    for (const arr of this.#arraysOf(task)) {
+      if (this.#lens.get(arr) !== arr.length) return true;
+      for (const item of arr) {
+        if (item !== null && typeof item === 'object' && !this.#itemSer.has(item)) return true;
+      }
+    }
+    return false;
+  }
+
+  *#itemEntries(key, task) {
+    for (const item of heavyItems(task)) yield [key, item];
+  }
+
+  /** Writes one task's data file now; `verify` reads it back and compares. */
+  #writeHeavySync(task, { skipIfSame = false, verify = false } = {}) {
+    const file = this.#heavyFile(task);
+    const chunks = this.#heavyOf(task);
+    ensureHeavyDir(file);
+    if (skipIfSame && sameAsFile(file, chunks)) return;
+    const seq = this.#nextSeq(file);
+    writeAtomicSync(file, chunks);
+    this.#seqLanded.set(file, seq);
+    if (verify && readFileSync(file, 'utf8') !== chunks.join('')) {
+      throw new Error(`${file}: what was written does not match what was read back`);
+    }
+  }
+
+  #writeCoreSync(projectId, opts) {
+    const file = tasksFile(projectId);
+    const seq = this.#nextSeq(file);
+    writeAtomicSync(file, this.#coreChunks(projectId, opts));
+    this.#seqLanded.set(file, seq);
+  }
+
+  /**
+   * One project, synchronously. The first write of a file still in the old
+   * format is the migration: a backup of it (never overwritten), every task's
+   * data file written and read back, and only then the main file. If any of that
+   * fails the old format keeps being written — saving never stops — and the
+   * backup, if made, stays.
+   */
+  #writeProjectSync(projectId, keys) {
+    if (this.#noSplit.has(projectId)) return this.#writeCoreSync(projectId, { plain: true });
+    if (this.#legacy.has(projectId)) {
+      const file = tasksFile(projectId);
+      try {
+        const bak = existsSync(file) ? backupOnce(file) : null;
+        for (const task of Object.values(this.tasks)) {
+          if (task.project === projectId) this.#writeHeavySync(task, { verify: true });
+        }
+        this.#writeCoreSync(projectId);
+        this.#legacy.delete(projectId);
+        if (bak) console.log(`[store] ${file}: pasa al formato dividido; copia de seguridad en ${bak}`);
+      } catch (e) {
+        this.#noSplit.add(projectId);
+        console.error(`[store] ${file}: no se pudo migrar al formato dividido (${e.message}); sigue en el formato antiguo`);
+        this.#writeCoreSync(projectId, { plain: true });
+      }
+      return undefined;
+    }
+    for (const key of keys) {
+      const task = this.tasks[key];
+      if (task) this.#writeHeavySync(task, { skipIfSame: this.#bootFlush });
+    }
+    return this.#writeCoreSync(projectId);
+  }
+
+  #revalidateAll() {
+    const moved = new Set(this.#coreSer.revalidate(Object.entries(this.tasks)));
+    for (const [key, task] of Object.entries(this.tasks)) {
+      for (const label of this.#itemSer.revalidate(this.#itemEntries(key, task))) moved.add(label);
+      if (this.#shapeMoved(task)) moved.add(key);
+    }
+    return [...moved];
+  }
+
+  /**
+   * Writes every dirty project's files now, synchronously. For the way out
    * (signals, restart, upgrade, tests): it first re-serializes every task and
    * compares with the cached text, so a task changed without `persist(task)`
    * is saved here too, even when nothing declared its project dirty.
@@ -360,59 +537,88 @@ class Store extends EventEmitter {
       clearTimeout(this.#timer);
       this.#timer = null;
     }
-    this.#adoptMoved(this.#ser.revalidate(Object.entries(this.tasks)), true);
+    this.#adoptMoved(this.#revalidateAll(), true);
     if (!this.#dirty.size) return;
     const pending = [...this.#dirty];
     this.#dirty.clear();
 
-    for (const [projectId, chunks] of this.#chunksOf(pending)) {
-      const file = tasksFile(projectId);
-      const seq = this.#nextSeq(projectId);
+    for (const projectId of pending) {
+      const keys = [...this.#heavyDirty].filter((k) => this.tasks[k]?.project === projectId);
+      for (const k of keys) this.#heavyDirty.delete(k);
       try {
-        writeAtomicSync(file, chunks);
-        this.#seqLanded.set(projectId, seq);
+        this.#writeProjectSync(projectId, keys);
       } catch (e) {
         // Losing one write is not worth taking the board down: memory is still
-        // the truth, and the next change writes the whole file again anyway.
+        // the truth, and the next change writes the project again anyway.
         this.#dirty.add(projectId);
-        console.error(`[store] no se pudo guardar ${file}: ${e.message}`);
+        for (const k of keys) this.#heavyDirty.add(k);
+        console.error(`[store] no se pudo guardar ${tasksFile(projectId)}: ${e.message}`);
       }
     }
   }
 
-  #nextSeq(projectId) {
-    const n = (this.#seqStarted.get(projectId) ?? 0) + 1;
-    this.#seqStarted.set(projectId, n);
+  #nextSeq(file) {
+    const n = (this.#seqStarted.get(file) ?? 0) + 1;
+    this.#seqStarted.set(file, n);
     return n;
   }
 
+  /** Whether the write numbered `seq` of `file` may still land (no newer one has). */
+  #current(file, seq) {
+    return (this.#seqLanded.get(file) ?? 0) < seq;
+  }
+
   /**
-   * The timer's write: same file, but the event loop is never held for the
-   * whole of it. The text comes from the per-task cache (only changed tasks are
+   * The timer's write: same files, but the event loop is never held for the
+   * whole of it. Each file's text comes from the caches (only what changed is
    * serialized), then goes to a temp file a piece per turn, renamed over the
-   * real one — so the file is always whole. A synchronous `flush()` that lands
+   * real one — so a file is always whole. A synchronous `flush()` that lands
    * meanwhile wins: the older text is dropped instead of renamed.
    */
   async #flushAsync() {
     if (this.#writing) return;   // the running write re-arms the timer if more came in
     this.#writing = true;
+    const pending = [...this.#dirty];
+    this.#dirty.clear();
+    const heavy = [...this.#heavyDirty];
+    this.#heavyDirty.clear();
+    const done = new Set();
     try {
-      if (!this.#dirty.size) return;
-      const pending = [...this.#dirty];
-      this.#dirty.clear();
-      const chunks = this.#chunksOf(pending);   // a snapshot: immutable strings from here on
-      for (const [projectId, parts] of chunks) {
-        const file = tasksFile(projectId);
-        const seq = this.#nextSeq(projectId);
+      for (const projectId of pending) {
+        // A file not yet in the split format is migrated by the synchronous path (it runs once).
+        if (this.#legacy.has(projectId) || this.#noSplit.has(projectId)) {
+          const keys = heavy.filter((k) => this.tasks[k]?.project === projectId);
+          keys.forEach((k) => done.add(k));
+          try { this.#writeProjectSync(projectId, keys); } catch (e) {
+            this.#dirty.add(projectId);
+            console.error(`[store] no se pudo guardar ${tasksFile(projectId)}: ${e.message}`);
+          }
+          continue;
+        }
+        const keys = heavy.filter((k) => this.tasks[k]?.project === projectId);
+        keys.forEach((k) => done.add(k));
         try {
-          const landed = await writeChunksAtomic(file, parts, () => (this.#seqLanded.get(projectId) ?? 0) < seq);
-          if (landed) this.#seqLanded.set(projectId, seq);
+          for (const key of keys) {            // the data files first, the main file last
+            const task = this.tasks[key];
+            if (!task) continue;
+            const file = this.#heavyFile(task);
+            const chunks = this.#heavyOf(task);   // a snapshot: immutable strings from here on
+            ensureHeavyDir(file);
+            const seq = this.#nextSeq(file);
+            if (await writeChunksAtomic(file, chunks, () => this.#current(file, seq))) this.#seqLanded.set(file, seq);
+          }
+          const file = tasksFile(projectId);
+          const parts = this.#coreChunks(projectId);
+          const seq = this.#nextSeq(file);
+          if (await writeChunksAtomic(file, parts, () => this.#current(file, seq))) this.#seqLanded.set(file, seq);
         } catch (e) {
           this.#dirty.add(projectId);
-          console.error(`[store] no se pudo guardar ${file}: ${e.message}`);
+          for (const k of keys) this.#heavyDirty.add(k);
+          console.error(`[store] no se pudo guardar ${tasksFile(projectId)}: ${e.message}`);
         }
       }
     } finally {
+      for (const k of heavy) if (!done.has(k)) this.#heavyDirty.add(k);
       this.#writing = false;
       // More changes arrived while writing (or a write failed): go again.
       if (this.#dirty.size && !this.#timer) this.#arm(PERSIST_DELAY_MS);
@@ -427,9 +633,9 @@ class Store extends EventEmitter {
   }
 
   /**
-   * Tasks whose JSON moved with no `persist(task)` to say so (a mutation that
-   * skipped the store's methods). The cache entry is already gone and their
-   * project is marked dirty, so the next write carries them.
+   * Tasks whose data moved with no `persist(task)` to say so (a mutation that
+   * skipped the store's methods). Their cached text is dropped and they are
+   * marked dirty, so the next write carries them.
    */
   #adoptMoved(moved, quiet = false) {
     for (const key of moved) {
@@ -447,10 +653,22 @@ class Store extends EventEmitter {
    * value. Resolves to the keys it found.
    */
   async sweep() {
-    const moved = await this.#ser.sweep(Object.entries(this.tasks));
-    this.#adoptMoved(moved);
-    if (moved.length && !this.#timer) this.#arm(PERSIST_DELAY_MS);
-    return moved;
+    const moved = new Set();
+    let start = performance.now();
+    for (const [key, task] of Object.entries(this.tasks)) {
+      // Known dirty: its next write carries whatever else moved in it.
+      if (this.#heavyDirty.has(key)) continue;
+      if (this.#coreSer.revalidate([[key, task]]).length || this.#shapeMoved(task)) moved.add(key);
+      for (const label of await this.#itemSer.sweep(this.#itemEntries(key, task))) moved.add(label);
+      if (performance.now() - start > 8) {
+        await new Promise((r) => setImmediate(r));
+        start = performance.now();
+      }
+    }
+    const keys = [...moved];
+    this.#adoptMoved(keys);
+    if (keys.length && !this.#timer) this.#arm(PERSIST_DELAY_MS);
+    return keys;
   }
 
   #armSweep() {
@@ -613,9 +831,9 @@ class Store extends EventEmitter {
     return task;
   }
 
-  touch(task) {
+  touch(task, hint = null) {
     task.updatedAt = new Date().toISOString();
-    this.persist(task);
+    this.persist(task, hint);
     if (task.kind === 'project') this.emit('project-chat', task);
     else this.emit('task', task);
   }
@@ -637,7 +855,7 @@ class Store extends EventEmitter {
     task.log.push(entry);
     if (task.log.length > MAX_LOG_LINES) task.log.splice(0, task.log.length - MAX_LOG_LINES);
     task.updatedAt = entry.ts;
-    this.persist(task);
+    this.persist(task, 'append');   // a new line: nothing already serialized changed
     if (task.kind === 'project') {
       this.emit('log', null, entry, task.project, Store.#holderExtra(task));
       this.emit('project-chat', task);
@@ -673,7 +891,7 @@ class Store extends EventEmitter {
     if (chat.messages.length > MAX_CHAT_MESSAGES) {
       chat.messages.splice(0, chat.messages.length - MAX_CHAT_MESSAGES);
     }
-    this.touch(task);
+    this.touch(task, 'append');   // a new message: the ones before it did not change
     if (task.kind === 'project') this.emit('chat', null, chat.id, message, task.project, Store.#holderExtra(task));
     else this.emit('chat', task.issue, chat.id, message, task.project);
     return message;
@@ -689,7 +907,8 @@ class Store extends EventEmitter {
   updateChat(task, chat, message, { patch = null, item = null, parentId = null } = {}) {
     if (patch) Object.assign(message, patch);
     task.updatedAt = new Date().toISOString();
-    this.persist(task);
+    // Only this message changed (a patch, or an item in its tree).
+    this.persist(task, 'append', message);
     const change = { messageId: message.id, patch, item, parentId };
     if (task.kind === 'project') {
       this.emit('chat-update', null, chat.id, change, task.project, Store.#holderExtra(task));

@@ -1,8 +1,20 @@
-// Child process of persist-atomic.test.mjs: it runs a real store on the data
-// directory the parent hands over (HFSMON_DATA_DIR, always a copy) so the parent
-// can kill it in the middle of a write. Not a test file: `node --test` does not
-// pick it up.
-import { store } from '../src/store.js';
+// Child process of the persistence tests: it runs a real store on the data
+// directory the parent hands over (HFSMON_DATA_DIR, always a copy), so the parent
+// can kill it in the middle of a write or look at what a boot did to the files.
+// Not a test file: `node --test` does not pick it up.
+import { mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+// A frozen clock, so a parent can predict what the boot's own fix-ups stamp.
+if (process.env.HFSMON_FROZEN_NOW) {
+  const T = new Date(process.env.HFSMON_FROZEN_NOW).getTime();
+  const RealDate = Date;
+  globalThis.Date = class extends RealDate {
+    constructor(...a) { super(...(a.length ? a : [T])); }
+    static now() { return T; }
+  };
+}
+const { store } = await import('../src/store.js');
+const pc = await import('../src/projectchats.js');
 
 const mode = process.argv[2];
 if (mode === 'hammer') {
@@ -15,7 +27,22 @@ if (mode === 'hammer') {
   console.log('ready');
 } else if (mode === 'boot') {
   // Boots (migrations run), writes everything, leaves.
+  pc.migrateProjectChatsOnBoot();   // what index.js does before it listens
   store.flush();
   console.log(JSON.stringify(Object.keys(store.tasks).length));
+  process.exit(0);
+} else if (mode === 'dump') {
+  // Boots, makes the first write of the project chats (which is what migrates their file),
+  // and dumps what is in MEMORY, one file per project, for the parent to compare with the disk.
+  const out = process.argv[3];
+  const holders = pc._loadedHoldersForTests();
+  if (holders.length) pc.persistHolder(holders[0][1]);
+  store.flush();
+  mkdirSync(out, { recursive: true });
+  const byProject = {};
+  for (const task of Object.values(store.tasks)) (byProject[task.project] ??= {})[task.issue] = task;
+  for (const [project, tasks] of Object.entries(byProject)) writeFileSync(path.join(out, `mem.${project}.json`), JSON.stringify(tasks));
+  writeFileSync(path.join(out, 'mem.holders.json'), JSON.stringify(Object.fromEntries(holders)));
+  console.log(JSON.stringify({ tasks: Object.keys(store.tasks).length, holders: holders.length }));
   process.exit(0);
 }

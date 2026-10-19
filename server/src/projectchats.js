@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, renameSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
 import { store } from './store.js';
@@ -8,6 +8,9 @@ import { listProjects, projectOf, baseBranchOf } from './projects.js';
 import { ensureDetachedWorktree, refreshDetachedWorktree } from './worktree.js';
 import { PROJECT_WORKTREE_DIR, isHolderKey, parseHolderKey } from './keys.js';
 import { SerCache, objectChunks, writeAtomicSync, writeChunksAtomic } from './persistcache.js';
+import {
+  SPLIT_MARK, coreText, heavyChunks, heavyItems, heavyPath, mergeHeavy, readHeavy, quarantine, ensureHeavyDir, backupOnce,
+} from './splitfmt.js';
 
 // Pure helpers live in `keys.js` (the runner imports them and must not pull in
 // this module's store); re-exported so every importer here keeps working.
@@ -31,6 +34,7 @@ export { PROJECT_WORKTREE_DIR, isHolderKey, parseHolderKey };
 export const HOLDER_TITLE = 'Proyecto';
 
 const FILE_NAME = 'projectchats.json';
+const SCOPE = 'projectchats';   // folder of the holders' data files, under taskdata/
 const FILE_VERSION = 1;
 // Same window and same reasons as the task store's (`store.js`): the file is
 // tens of MB, a burst of tool events must become one write.
@@ -50,8 +54,18 @@ let sweepTimer = null;
 let writing = false;
 let seqStarted = 0;
 let seqLanded = 0;
-/** JSON text per holder: a write re-serializes only the holders that changed. */
-let ser = new SerCache();
+/** Text of each holder's entry in the main file (everything but log and messages). */
+let coreSer = new SerCache(coreText);
+/** Text of each log line and message, so a write re-serializes only what changed. */
+let itemSer = new SerCache();
+/** Keys of the holders whose data file is not on disk yet. */
+const heavyDirty = new Set();
+/** The file on disk is still the old, single-file format (until the first write migrates it). */
+let legacy = false;
+/** The migration failed: keep writing the old format. */
+let noSplit = false;
+/** Length each array had when it was serialized (to notice a silent push/splice). */
+let lens = new WeakMap();
 /** key → in-flight `ensureHolderWorktree`, so two chats starting at once create it once. */
 const ensuring = new Map();
 
@@ -104,6 +118,7 @@ export function loadProjectChats() {
     if (!holder || typeof holder !== 'object' || holder.kind !== 'project') continue;
     const parsed = parseHolderKey(key);
     if (!parsed) continue;
+    if (holder[SPLIT_MARK]) loadHeavy(f, key, holder); else legacy = true;
     holder.project = parsed.project;
     holder.machine = parsed.machine;
     holder.issue = null;
@@ -115,12 +130,57 @@ export function loadProjectChats() {
   }
 }
 
+/**
+ * Puts a split holder's log and messages back from its data file. One that is
+ * missing or unreadable is reported (an unreadable one is moved aside so the next
+ * write cannot overwrite it); the holder starts with no history, and the
+ * `.pre-split.bak` left at migration still has it.
+ */
+function loadHeavy(f, key, holder) {
+  const r = readHeavy(DATA_DIR, SCOPE, key);
+  if (!r.ok) {
+    const aside = r.reason === 'corrupt' ? quarantine(r.file) : null;
+    console.error(`[projectchats] ${f}: el chat ${key} está dividido pero ${r.file} está ${r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); movido a ${aside}`}; arranca sin historial (la copia .pre-split.bak lo conserva)`);
+    delete holder[SPLIT_MARK];
+    return;
+  }
+  const lost = mergeHeavy(holder, r.heavy);
+  if (lost.log || lost.chats.length) {
+    console.error(`[projectchats] ${f}: el chat ${key} perdió en ${r.file}: ${lost.log ? 'el log ' : ''}${lost.chats.length ? `mensajes de ${lost.chats.join(', ')}` : ''}`);
+  }
+}
+
+/**
+ * Converts the file to the split format now if it is still in the old one (the
+ * task store does the same at boot): a backup, every holder's data file, then the
+ * main file. Without this the conversion would wait for the first write of a
+ * project chat and block the board for those seconds in the middle of a session.
+ * Nothing to do for a missing, empty or already split file.
+ */
+export function migrateProjectChatsOnBoot() {
+  loadProjectChats();
+  if (!legacy || !holders.size) return;
+  dirty = true;
+  flushProjectChats();
+}
+
+/** Test seam: the holders in memory, as `[key, holder]`. */
+export function _loadedHoldersForTests() {
+  loadProjectChats();
+  return [...holders];
+}
+
 /** Test seam: forget everything in memory (the file is untouched). */
 export function _resetProjectChatsForTests() {
   if (timer) clearTimeout(timer);
   timer = null;
   dirty = false;
-  ser = new SerCache();
+  coreSer = new SerCache(coreText);
+  itemSer = new SerCache();
+  heavyDirty.clear();
+  legacy = false;
+  noSplit = false;
+  lens = new WeakMap();
   loaded = false;
   holders.clear();
   ensuring.clear();
@@ -171,14 +231,129 @@ export function allHolders() {
   return out;
 }
 
-/** The file as pieces of text, each holder from the cache. */
-function chunks() {
-  return objectChunks(ser, [...holders], { prefix: `{"version":${FILE_VERSION},"holders":`, suffix: '}' });
+/** The main file as pieces of text, each holder's entry from the cache. */
+function coreChunks({ plain = false } = {}) {
+  const textOf = (v) => (plain ? JSON.stringify(v) : coreSer.text(v));
+  return objectChunks(textOf, [...holders], { prefix: `{"version":${FILE_VERSION},"holders":`, suffix: '}' });
+}
+
+const heavyFile = (key) => heavyPath(DATA_DIR, SCOPE, key);
+
+function* arraysOf(holder) {
+  if (Array.isArray(holder.log)) yield holder.log;
+  for (const chat of Array.isArray(holder.chats) ? holder.chats : []) {
+    if (chat && Array.isArray(chat.messages)) yield chat.messages;
+  }
+}
+
+/** A holder's log and messages as pieces; also remembers how long each array was. */
+function heavyOf(holder) {
+  const out = heavyChunks(holder, (item) => itemSer.text(item));
+  for (const arr of arraysOf(holder)) lens.set(arr, arr.length);
+  return out;
+}
+
+/** An array longer or shorter than when serialized, a new array, or an item nobody serialized. */
+function shapeMoved(holder) {
+  for (const arr of arraysOf(holder)) {
+    if (lens.get(arr) !== arr.length) return true;
+    for (const item of arr) {
+      if (item !== null && typeof item === 'object' && !itemSer.has(item)) return true;
+    }
+  }
+  return false;
+}
+
+function* itemEntries(key, holder) {
+  for (const item of heavyItems(holder)) yield [key, item];
+}
+
+function sameAsFile(f, chunks) {
+  try {
+    const text = chunks.join('');
+    return statSync(f).size === Buffer.byteLength(text) && readFileSync(f, 'utf8') === text;
+  } catch {
+    return false;
+  }
+}
+
+const seqs = new Map();      // file → sequence of the newest write started
+const landed = new Map();    // file → sequence of the newest write that landed
+const nextSeq = (f) => { const n = (seqs.get(f) ?? 0) + 1; seqs.set(f, n); return n; };
+const current = (f, seq) => (landed.get(f) ?? 0) < seq;
+
+function writeHeavySync(key, holder, { verify = false } = {}) {
+  const f = heavyFile(key);
+  const chunks = heavyOf(holder);
+  ensureHeavyDir(f);
+  const seq = nextSeq(f);
+  writeAtomicSync(f, chunks);
+  landed.set(f, seq);
+  if (verify && readFileSync(f, 'utf8') !== chunks.join('')) throw new Error(`${f}: what was written does not match what was read back`);
+}
+
+function writeCoreSync(opts) {
+  const f = file();
+  const seq = nextSeq(f);
+  writeAtomicSync(f, coreChunks(opts));
+  landed.set(f, seq);
 }
 
 /**
- * Writes `projectchats.json` now, synchronously (the way out): tmp + rename, so
- * a kill never leaves half a file. It first re-serializes every holder and
+ * Everything, synchronously. The first write of a file still in the old format
+ * is the migration: a backup of it (never overwritten), every holder's data
+ * file written and read back, and only then the main file. If any of that fails
+ * the old format keeps being written — saving never stops.
+ */
+function writeAllSync(keys) {
+  mkdirSync(DATA_DIR, { recursive: true });
+  if (noSplit) return writeCoreSync({ plain: true });
+  if (legacy) {
+    const f = file();
+    try {
+      const bak = existsSync(f) ? backupOnce(f) : null;
+      for (const [key, holder] of holders) writeHeavySync(key, holder, { verify: true });
+      writeCoreSync();
+      legacy = false;
+      if (bak) console.log(`[projectchats] ${f}: pasa al formato dividido; copia de seguridad en ${bak}`);
+    } catch (e) {
+      noSplit = true;
+      console.error(`[projectchats] ${f}: no se pudo migrar al formato dividido (${e.message}); sigue en el formato antiguo`);
+      writeCoreSync({ plain: true });
+    }
+    return undefined;
+  }
+  for (const key of keys) {
+    const holder = holders.get(key);
+    if (holder) writeHeavySync(key, holder);
+  }
+  return writeCoreSync();
+}
+
+/** Holders whose data moved with no `persistHolder` to say so; their cached text is dropped. */
+function revalidateAll() {
+  const moved = new Set(coreSer.revalidate([...holders]));
+  for (const [key, holder] of holders) {
+    for (const label of itemSer.revalidate(itemEntries(key, holder))) moved.add(label);
+    if (shapeMoved(holder)) moved.add(key);
+  }
+  return [...moved];
+}
+
+function adoptMoved(keys) {
+  for (const key of keys) {
+    const holder = holders.get(key);
+    if (!holder) continue;
+    coreSer.invalidate(holder);
+    for (const item of heavyItems(holder)) itemSer.invalidate(item);
+    heavyDirty.add(key);
+    dirty = true;
+  }
+}
+
+/**
+ * Writes the project chats now, synchronously (the way out): tmp + rename, so a
+ * kill never leaves half a file. It first re-serializes every holder and
  * compares with the cached text, so a holder changed without `persistHolder`
  * is saved too.
  */
@@ -187,38 +362,50 @@ export function flushProjectChats() {
     clearTimeout(timer);
     timer = null;
   }
-  if (ser.revalidate([...holders]).length) dirty = true;
+  adoptMoved(revalidateAll());
   if (!dirty) return;
   dirty = false;
-  const f = file();
-  const seq = ++seqStarted;
+  const keys = [...heavyDirty];
+  heavyDirty.clear();
   try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeAtomicSync(f, chunks());
-    seqLanded = seq;
+    writeAllSync(keys);
   } catch (e) {
     dirty = true;
-    console.error(`[projectchats] no se pudo guardar ${f}: ${e.message}`);
+    keys.forEach((k) => heavyDirty.add(k));
+    console.error(`[projectchats] no se pudo guardar ${file()}: ${e.message}`);
   }
 }
 
-/** The timer's write: same file, written a piece per turn so the loop is never held for all of it. */
+/** The timer's write: same files, written a piece per turn so the loop is never held for all of it. */
 async function flushProjectChatsAsync() {
   if (writing) return;
   writing = true;
+  const keys = [...heavyDirty];
+  heavyDirty.clear();
+  const wasDirty = dirty;
+  dirty = false;
   try {
-    if (!dirty) return;
-    dirty = false;
-    const f = file();
-    const seq = ++seqStarted;
-    const parts = chunks();   // a snapshot: immutable strings from here on
-    try {
-      mkdirSync(DATA_DIR, { recursive: true });
-      if (await writeChunksAtomic(f, parts, () => seqLanded < seq)) seqLanded = seq;
-    } catch (e) {
-      dirty = true;
-      console.error(`[projectchats] no se pudo guardar ${f}: ${e.message}`);
+    if (!wasDirty) return;
+    // The migration (once) and the old-format fallback go through the synchronous path.
+    if (legacy || noSplit) { writeAllSync(keys); return; }
+    mkdirSync(DATA_DIR, { recursive: true });
+    for (const key of keys) {             // the data files first, the main file last
+      const holder = holders.get(key);
+      if (!holder) continue;
+      const f = heavyFile(key);
+      const parts = heavyOf(holder);       // a snapshot: immutable strings from here on
+      ensureHeavyDir(f);
+      const seq = nextSeq(f);
+      if (await writeChunksAtomic(f, parts, () => current(f, seq))) landed.set(f, seq);
     }
+    const f = file();
+    const parts = coreChunks();
+    const seq = nextSeq(f);
+    if (await writeChunksAtomic(f, parts, () => current(f, seq))) landed.set(f, seq);
+  } catch (e) {
+    dirty = true;
+    keys.forEach((k) => heavyDirty.add(k));
+    console.error(`[projectchats] no se pudo guardar ${file()}: ${e.message}`);
   } finally {
     writing = false;
     if (dirty && !timer) arm();
@@ -234,13 +421,24 @@ export async function _flushProjectChatsAsyncForTests() {
 
 /** Slice-by-slice check for holders changed without `persistHolder`; resolves to their keys. */
 export async function sweepProjectChats() {
-  const moved = await ser.sweep([...holders]);
-  if (moved.length) {
-    console.error(`[projectchats] ${moved.join(', ')} cambió sin persistHolder; se guarda igualmente`);
-    dirty = true;
+  const moved = new Set();
+  let start = performance.now();
+  for (const [key, holder] of holders) {
+    if (heavyDirty.has(key)) continue;   // known dirty: its next write carries whatever else moved
+    if (coreSer.revalidate([[key, holder]]).length || shapeMoved(holder)) moved.add(key);
+    for (const label of await itemSer.sweep(itemEntries(key, holder))) moved.add(label);
+    if (performance.now() - start > 8) {
+      await new Promise((r) => setImmediate(r));
+      start = performance.now();
+    }
+  }
+  const keys = [...moved];
+  if (keys.length) {
+    console.error(`[projectchats] ${keys.join(', ')} cambió sin persistHolder; se guarda igualmente`);
+    adoptMoved(keys);
     if (!timer) arm();
   }
-  return moved;
+  return keys;
 }
 
 function armSweep() {
@@ -261,15 +459,25 @@ function arm() {
   timer.unref?.();
 }
 
-/** Coalesced write, like the task store's: bursts of tool events become one write. */
-export function persistHolder(holder) {
+/**
+ * Coalesced write, like the task store's: bursts of tool events become one write.
+ * `hint === 'append'` comes from the callers that know exactly what they changed
+ * (a log line or message added, one message patched): what is already serialized
+ * is kept. Any other call distrusts everything the holder has.
+ */
+export function persistHolder(holder, hint = null, changed = null) {
   if (holder) {
     const key = holderKey(holder.project, holder.machine);
     // A holder handed in that is not the registered one still gets saved.
     if (!holders.has(key)) holders.set(key, holder);
-    ser.invalidate(holder);
+    coreSer.invalidate(holder);
+    itemSer.invalidate(changed);   // the one message a patch changed, if the caller said which
+    if (hint !== 'append') for (const item of heavyItems(holder)) itemSer.invalidate(item);
+    heavyDirty.add(key);
   } else {
-    ser.invalidateAll();
+    coreSer.invalidateAll();
+    itemSer.invalidateAll();
+    for (const key of holders.keys()) heavyDirty.add(key);
   }
   dirty = true;
   armSweep();

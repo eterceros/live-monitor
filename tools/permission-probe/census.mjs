@@ -6,6 +6,8 @@
 // Reads only. Never imports anything from server/src: `tasks.json` is parsed
 // with readFileSync so the live board's store is not touched.
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+// Pure (only node:*), not the store: puts a task's log back when the board has split it into taskdata/.
+import { readTasksFileMerged } from '../../server/src/splitfmt.js';
 import { join, basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -89,8 +91,7 @@ function userPrompts(rows) {
 }
 
 // --------------------------------------------------------------------- tasks
-const tasksRaw = readFileSync(join(BOARD, 'server', 'data', 'tasks.json'), 'utf8');
-const tasks = JSON.parse(tasksRaw);
+const tasks = readTasksFileMerged(join(BOARD, 'server', 'data', 'tasks.json'));
 // sessionId -> {issue, where}
 const sessionIndex = new Map();
 for (const [issue, task] of Object.entries(tasks)) {

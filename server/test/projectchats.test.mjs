@@ -3,13 +3,14 @@ import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { readTasksFileMerged } from '../src/splitfmt.js';
 import { DATA_DIR } from './isolate.mjs';
 
 const { store } = await import('../src/store.js');
 const pc = await import('../src/projectchats.js');
 
 const FILE = path.join(DATA_DIR, 'projectchats.json');
-const onDisk = () => JSON.parse(readFileSync(FILE, 'utf8'));
+const onDisk = () => readTasksFileMerged(FILE, { key: (raw) => raw.holders });
 after(() => store.flush());
 beforeEach(() => pc._resetProjectChatsForTests());
 

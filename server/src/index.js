@@ -22,7 +22,7 @@ import {
   backfillAgent, agentCalls, stopBackground, startTask, isUserRun, isRunning,
   draftIssueClosing, discardIssueClosing, closeIssueWithoutPr, renameChat, bootstrapRepo, changeBaseBranch, refreshGitNow,
 } from './pipeline.js';
-import { holderKey, getHolder, getHolderByKey, allHolders, holderMachines } from './projectchats.js';
+import { holderKey, getHolder, getHolderByKey, allHolders, holderMachines, migrateProjectChatsOnBoot } from './projectchats.js';
 import { registerIssueDraftRoutes } from './issuedraft.js';
 import { HOLDER_TAB } from './chattabs.js';
 import { machineOf, machines } from './machine.js';
@@ -1746,6 +1746,10 @@ configEvents.on('invalid', (e) => {
 // never polls or resumes anything. `listening` is still false here, so the
 // crash guard exits with 1 and the restart and upgrade scripts see a dead board.
 const promptCount = validatePrompts();
+
+// The project chats' file converts to the split format (once, with a backup) here,
+// where a few seconds of work block nobody, and not on the first message of a chat.
+migrateProjectChatsOnBoot();
 
 bootHost = listenHost();
 server.listen(config.port, bootHost, () => {

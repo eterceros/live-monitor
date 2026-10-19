@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { readTasksFileMerged } from '../src/splitfmt.js';
 
 /**
  * El store es un singleton y `config.js` fija su directorio en la primera
@@ -21,7 +22,7 @@ after(() => {
 });
 
 const issue = (n) => ({ number: n, title: `prueba ${n}`, labels: [], url: 'x', closed: false });
-const enDisco = () => JSON.parse(readFileSync(FILE, 'utf8'));
+const enDisco = () => readTasksFileMerged(FILE);
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('el arranque deja el archivo escrito sin esperar a nada', () => {

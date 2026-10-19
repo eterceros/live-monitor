@@ -3,6 +3,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { readTasksFileMerged } from '../src/splitfmt.js';
 import { DATA_DIR } from './isolate.mjs';
 
 process.env.HFSMON_PERSIST_DELAY_MS = '60000';
@@ -11,7 +12,7 @@ const { store } = await import('../src/store.js');
 const pc = await import('../src/projectchats.js');
 
 const FILE = path.join(DATA_DIR, 'projectchats.json');
-const onDisk = () => JSON.parse(readFileSync(FILE, 'utf8'));
+const onDisk = () => readTasksFileMerged(FILE, { key: (raw) => raw.holders });
 const inMemory = () => ({ version: 1, holders: JSON.parse(JSON.stringify(Object.fromEntries(
   pc.allHolders().map((h) => [pc.holderKey(h.project, h.machine), h])))) });
 after(() => store.flush());
