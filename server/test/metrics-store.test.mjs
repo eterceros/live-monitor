@@ -70,7 +70,7 @@ test('spans are written to disk without a task broadcast or an updatedAt bump', 
     const s = begin(t, { kind: 'phase', name: 'triage' });
     end(t, s);
     record(t, { kind: 'wait', name: 'quota_park', startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:01:00.000Z' });
-    await wait(450);
+    await store.flushAsync();   // the 3 s write window, driven by hand
   } finally {
     store.off('task', on);
   }
@@ -84,7 +84,7 @@ test('spans are written to disk without a task broadcast or an updatedAt bump', 
 test('an open span written to disk is closed as interrupted on the next load', async () => {
   const t = mk(920004);
   begin(t, { kind: 'phase', name: 'fixing' });
-  await wait(450);
+  await store.flushAsync();   // the 3 s write window, driven by hand
   const reloaded = onDisk()['920004'];
   assert.equal(reloaded.timings[0].endedAt, null);
   migrateTask(reloaded);
@@ -96,7 +96,7 @@ test('a task parked by quota keeps its park across a reload and records the wait
   parkForQuota(t, { resumeFrom: 'fixing' });
   t.quotaPark.since = '2026-10-05T10:00:00.000Z';
   store.touch(t);
-  await wait(450);
+  await store.flushAsync();   // the 3 s write window, driven by hand
   const reloaded = onDisk()['920005'];
   migrateTask(reloaded);
   assert.equal(reloaded.quotaPark.since, '2026-10-05T10:00:00.000Z');

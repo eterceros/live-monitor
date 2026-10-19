@@ -1627,7 +1627,24 @@ function broadcast(payload) {
   }
 }
 
-store.on('task', (task) => broadcast({ type: 'task', task: publicTask(task) }));
+// A task is announced at once the first time, then at most once per window: a
+// chat turn touches its task per tool call, and each announcement serializes the
+// whole card for every open board. The trailing send carries the latest state,
+// so nothing is lost, only merged.
+const TASK_BROADCAST_WINDOW_MS = 250;
+const taskWindows = new Map();
+store.on('task', (task) => {
+  const open = taskWindows.get(task);
+  if (open) { open.again = true; return; }
+  broadcast({ type: 'task', task: publicTask(task) });
+  const win = { again: false, timer: null };
+  win.timer = setTimeout(() => {
+    taskWindows.delete(task);
+    if (win.again) broadcast({ type: 'task', task: publicTask(task) });
+  }, TASK_BROADCAST_WINDOW_MS);
+  win.timer.unref?.();
+  taskWindows.set(task, win);
+});
 // `project` is the store's own last argument (`store.js`), forwarded, not
 // guessed here: only the store knows which file the task came out of. The two
 // halves stay separate on the wire, as they do in every URL — `#` never

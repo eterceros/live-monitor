@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, config } from './config.js';
 import { migrateTask } from './mode.js';
@@ -10,6 +10,7 @@ import { EFFORT_LEVELS } from './effort.js';
 import { requireProject } from './machine.js';
 import { metricsHooks } from './metrics.js';
 import { DEFAULT_PROJECT_ID, coerceKey, isProjectId, keyOf, tasksFileOf } from './keys.js';
+import { SerCache, objectChunks, writeAtomicSync, writeChunksAtomic } from './persistcache.js';
 
 /**
  * One tasks file per project, the union in one object.
@@ -28,9 +29,16 @@ import { DEFAULT_PROJECT_ID, coerceKey, isProjectId, keyOf, tasksFileOf } from '
  * because `keyOf` refuses a task without one.
  */
 const MAX_LOG_LINES = 3000;
-// Long enough that a burst of tool events becomes one write, short enough that
-// a crash loses nothing anyone would miss.
-const PERSIST_DELAY_MS = 250;
+// A burst of tool events becomes one write. The files are tens of MB, so the
+// window is wide: a hard kill (taskkill /F, power loss) loses at most this much;
+// every orderly exit (signal, restart, upgrade) flushes synchronously anyway.
+// `HFSMON_PERSIST_DELAY_MS` exists for tests.
+const PERSIST_DELAY_MS = process.env.HFSMON_PERSIST_DELAY_MS !== undefined
+  ? Number(process.env.HFSMON_PERSIST_DELAY_MS)
+  : 3000;
+// How often a slice-by-slice check looks for a task that changed without
+// `persist(task)` (see `sweep`). 0 disables it.
+const SWEEP_INTERVAL_MS = Number(process.env.HFSMON_SWEEP_INTERVAL_MS ?? 60_000);
 
 export const STATES = [
   'assigned',          // detected on GitHub, nothing started, waiting for a slot
@@ -115,6 +123,14 @@ class Store extends EventEmitter {
   /** projectId → { orphans }. Its keys are the projects this store writes. */
   #projects = new Map();
   #timer = null;
+  /** JSON text per task, so a write re-serializes only what changed. */
+  #ser = new SerCache();
+  /** An async write is running; the next one waits for it. */
+  #writing = false;
+  /** projectId → sequence of the newest write started / landed (stale async writes are dropped). */
+  #seqStarted = new Map();
+  #seqLanded = new Map();
+  #sweepTimer = null;
   /** Registered by `projectchats.js`: the store cannot import it (it imports the store). */
   #holderPersister = null;
   #holderFlusher = null;
@@ -201,6 +217,7 @@ class Store extends EventEmitter {
     // A kill leaves the last burst unwritten otherwise. `beforeExit` covers the
     // ordinary end, the signals cover the way this board is actually stopped.
     process.once('beforeExit', () => this.flush());
+    this.#armSweep();
     for (const signal of ['SIGINT', 'SIGTERM']) {
       process.once(signal, () => { this.flush(); process.exit(0); });
     }
@@ -285,10 +302,14 @@ class Store extends EventEmitter {
     }
     this.#markDirty(task);
     if (this.#timer) return;
+    this.#arm(PERSIST_DELAY_MS);
+  }
+
+  #arm(ms) {
     this.#timer = setTimeout(() => {
       this.#timer = null;
-      this.flush();
-    }, PERSIST_DELAY_MS);
+      this.#flushAsync();
+    }, ms);
     // Never hold the process open just to write a file.
     this.#timer.unref?.();
   }
@@ -300,6 +321,9 @@ class Store extends EventEmitter {
    */
   #markDirty(task) {
     const projectId = task && isProjectId(task.project) ? task.project : null;
+    // Its cached JSON is stale from this moment; the next write serializes it
+    // again. Without a task, nothing can be trusted: everything is serialized.
+    if (task) this.#ser.invalidate(task); else this.#ser.invalidateAll();
     if (projectId) {
       this.#project(projectId);
       this.#dirty.add(projectId);
@@ -308,7 +332,26 @@ class Store extends EventEmitter {
     for (const id of this.#projects.keys()) this.#dirty.add(id);
   }
 
-  /** Writes every dirty project's file now. Called on a timer and on the way out. */
+  /**
+   * The file of each project in `ids` as pieces of text. Each file gets back
+   * the shape it was read in, `{ "<issue>": task }`, orphans included.
+   */
+  #chunksOf(ids) {
+    // One pass over the union, not one per project.
+    const files = new Map(ids.map((id) => [id, { ...(this.#projects.get(id)?.orphans ?? {}) }]));
+    for (const task of Object.values(this.tasks)) {
+      const out = files.get(task.project);
+      if (out) out[task.issue] = task;
+    }
+    return new Map([...files].map(([id, out]) => [id, objectChunks(this.#ser, Object.entries(out))]));
+  }
+
+  /**
+   * Writes every dirty project's file now, synchronously. For the way out
+   * (signals, restart, upgrade, tests): it first re-serializes every task and
+   * compares with the cached text, so a task changed without `persist(task)`
+   * is saved here too, even when nothing declared its project dirty.
+   */
   flush() {
     this.#holderFlusher?.();
     // An explicit write makes the scheduled one redundant, and leaving it armed
@@ -317,22 +360,17 @@ class Store extends EventEmitter {
       clearTimeout(this.#timer);
       this.#timer = null;
     }
+    this.#adoptMoved(this.#ser.revalidate(Object.entries(this.tasks)), true);
     if (!this.#dirty.size) return;
     const pending = [...this.#dirty];
     this.#dirty.clear();
 
-    // One pass over the union, not one per project: each file gets back the
-    // shape it was read in, `{ "<issue>": task }`, orphans included.
-    const files = new Map(pending.map((id) => [id, { ...(this.#projects.get(id)?.orphans ?? {}) }]));
-    for (const task of Object.values(this.tasks)) {
-      const out = files.get(task.project);
-      if (out) out[task.issue] = task;
-    }
-
-    for (const [projectId, out] of files) {
+    for (const [projectId, chunks] of this.#chunksOf(pending)) {
       const file = tasksFile(projectId);
+      const seq = this.#nextSeq(projectId);
       try {
-        writeFileSync(file, JSON.stringify(out, null, 2), 'utf8');
+        writeAtomicSync(file, chunks);
+        this.#seqLanded.set(projectId, seq);
       } catch (e) {
         // Losing one write is not worth taking the board down: memory is still
         // the truth, and the next change writes the whole file again anyway.
@@ -340,6 +378,88 @@ class Store extends EventEmitter {
         console.error(`[store] no se pudo guardar ${file}: ${e.message}`);
       }
     }
+  }
+
+  #nextSeq(projectId) {
+    const n = (this.#seqStarted.get(projectId) ?? 0) + 1;
+    this.#seqStarted.set(projectId, n);
+    return n;
+  }
+
+  /**
+   * The timer's write: same file, but the event loop is never held for the
+   * whole of it. The text comes from the per-task cache (only changed tasks are
+   * serialized), then goes to a temp file a piece per turn, renamed over the
+   * real one — so the file is always whole. A synchronous `flush()` that lands
+   * meanwhile wins: the older text is dropped instead of renamed.
+   */
+  async #flushAsync() {
+    if (this.#writing) return;   // the running write re-arms the timer if more came in
+    this.#writing = true;
+    try {
+      if (!this.#dirty.size) return;
+      const pending = [...this.#dirty];
+      this.#dirty.clear();
+      const chunks = this.#chunksOf(pending);   // a snapshot: immutable strings from here on
+      for (const [projectId, parts] of chunks) {
+        const file = tasksFile(projectId);
+        const seq = this.#nextSeq(projectId);
+        try {
+          const landed = await writeChunksAtomic(file, parts, () => (this.#seqLanded.get(projectId) ?? 0) < seq);
+          if (landed) this.#seqLanded.set(projectId, seq);
+        } catch (e) {
+          this.#dirty.add(projectId);
+          console.error(`[store] no se pudo guardar ${file}: ${e.message}`);
+        }
+      }
+    } finally {
+      this.#writing = false;
+      // More changes arrived while writing (or a write failed): go again.
+      if (this.#dirty.size && !this.#timer) this.#arm(PERSIST_DELAY_MS);
+    }
+  }
+
+  /** Test seam: the write the timer runs, now, awaitable. */
+  async flushAsync() {
+    if (this.#timer) { clearTimeout(this.#timer); this.#timer = null; }
+    while (this.#writing) await new Promise((r) => setTimeout(r, 5));
+    await this.#flushAsync();
+  }
+
+  /**
+   * Tasks whose JSON moved with no `persist(task)` to say so (a mutation that
+   * skipped the store's methods). The cache entry is already gone and their
+   * project is marked dirty, so the next write carries them.
+   */
+  #adoptMoved(moved, quiet = false) {
+    for (const key of moved) {
+      const task = this.tasks[key];
+      if (!task) continue;
+      if (!quiet) console.error(`[store] ${key} cambió sin store.persist(task); se guarda igualmente`);
+      this.#markDirty(task);
+    }
+    return moved;
+  }
+
+  /**
+   * Slice-by-slice check (a few ms at a time) for tasks changed without
+   * `persist(task)`, so a missed call costs at most one interval and never a
+   * value. Resolves to the keys it found.
+   */
+  async sweep() {
+    const moved = await this.#ser.sweep(Object.entries(this.tasks));
+    this.#adoptMoved(moved);
+    if (moved.length && !this.#timer) this.#arm(PERSIST_DELAY_MS);
+    return moved;
+  }
+
+  #armSweep() {
+    if (!(SWEEP_INTERVAL_MS > 0)) return;
+    this.#sweepTimer = setTimeout(async () => {
+      try { await this.sweep(); } catch (e) { console.error(`[store] sweep: ${e.message}`); }
+      this.#armSweep();
+    }, SWEEP_INTERVAL_MS);
+    this.#sweepTimer.unref?.();
   }
 
   /**

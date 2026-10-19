@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
+import { readFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
 import { store } from './store.js';
@@ -7,6 +7,7 @@ import { machines, machineFor, machineViewFor } from './machine.js';
 import { listProjects, projectOf, baseBranchOf } from './projects.js';
 import { ensureDetachedWorktree, refreshDetachedWorktree } from './worktree.js';
 import { PROJECT_WORKTREE_DIR, isHolderKey, parseHolderKey } from './keys.js';
+import { SerCache, objectChunks, writeAtomicSync, writeChunksAtomic } from './persistcache.js';
 
 // Pure helpers live in `keys.js` (the runner imports them and must not pull in
 // this module's store); re-exported so every importer here keeps working.
@@ -31,7 +32,12 @@ export const HOLDER_TITLE = 'Proyecto';
 
 const FILE_NAME = 'projectchats.json';
 const FILE_VERSION = 1;
-const PERSIST_DELAY_MS = 250;
+// Same window and same reasons as the task store's (`store.js`): the file is
+// tens of MB, a burst of tool events must become one write.
+const PERSIST_DELAY_MS = process.env.HFSMON_PERSIST_DELAY_MS !== undefined
+  ? Number(process.env.HFSMON_PERSIST_DELAY_MS)
+  : 3000;
+const SWEEP_INTERVAL_MS = Number(process.env.HFSMON_SWEEP_INTERVAL_MS ?? 60_000);
 
 const file = () => path.join(DATA_DIR, FILE_NAME);
 
@@ -40,6 +46,12 @@ const holders = new Map();
 let loaded = false;
 let dirty = false;
 let timer = null;
+let sweepTimer = null;
+let writing = false;
+let seqStarted = 0;
+let seqLanded = 0;
+/** JSON text per holder: a write re-serializes only the holders that changed. */
+let ser = new SerCache();
 /** key → in-flight `ensureHolderWorktree`, so two chats starting at once create it once. */
 const ensuring = new Map();
 
@@ -108,6 +120,7 @@ export function _resetProjectChatsForTests() {
   if (timer) clearTimeout(timer);
   timer = null;
   dirty = false;
+  ser = new SerCache();
   loaded = false;
   holders.clear();
   ensuring.clear();
@@ -158,26 +171,94 @@ export function allHolders() {
   return out;
 }
 
-/** Writes `projectchats.json` now: tmp + rename, so a kill never leaves half a file. */
+/** The file as pieces of text, each holder from the cache. */
+function chunks() {
+  return objectChunks(ser, [...holders], { prefix: `{"version":${FILE_VERSION},"holders":`, suffix: '}' });
+}
+
+/**
+ * Writes `projectchats.json` now, synchronously (the way out): tmp + rename, so
+ * a kill never leaves half a file. It first re-serializes every holder and
+ * compares with the cached text, so a holder changed without `persistHolder`
+ * is saved too.
+ */
 export function flushProjectChats() {
   if (timer) {
     clearTimeout(timer);
     timer = null;
   }
+  if (ser.revalidate([...holders]).length) dirty = true;
   if (!dirty) return;
   dirty = false;
-  const out = { version: FILE_VERSION, holders: Object.fromEntries(holders) };
   const f = file();
-  const tmp = `${f}.tmp`;
+  const seq = ++seqStarted;
   try {
     mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(tmp, JSON.stringify(out, null, 2), 'utf8');
-    renameSync(tmp, f);
+    writeAtomicSync(f, chunks());
+    seqLanded = seq;
   } catch (e) {
     dirty = true;
-    try { unlinkSync(tmp); } catch { /* nothing to clean */ }
     console.error(`[projectchats] no se pudo guardar ${f}: ${e.message}`);
   }
+}
+
+/** The timer's write: same file, written a piece per turn so the loop is never held for all of it. */
+async function flushProjectChatsAsync() {
+  if (writing) return;
+  writing = true;
+  try {
+    if (!dirty) return;
+    dirty = false;
+    const f = file();
+    const seq = ++seqStarted;
+    const parts = chunks();   // a snapshot: immutable strings from here on
+    try {
+      mkdirSync(DATA_DIR, { recursive: true });
+      if (await writeChunksAtomic(f, parts, () => seqLanded < seq)) seqLanded = seq;
+    } catch (e) {
+      dirty = true;
+      console.error(`[projectchats] no se pudo guardar ${f}: ${e.message}`);
+    }
+  } finally {
+    writing = false;
+    if (dirty && !timer) arm();
+  }
+}
+
+/** Test seam: the write the timer runs, now, awaitable. */
+export async function _flushProjectChatsAsyncForTests() {
+  if (timer) { clearTimeout(timer); timer = null; }
+  while (writing) await new Promise((r) => setTimeout(r, 5));
+  await flushProjectChatsAsync();
+}
+
+/** Slice-by-slice check for holders changed without `persistHolder`; resolves to their keys. */
+export async function sweepProjectChats() {
+  const moved = await ser.sweep([...holders]);
+  if (moved.length) {
+    console.error(`[projectchats] ${moved.join(', ')} cambió sin persistHolder; se guarda igualmente`);
+    dirty = true;
+    if (!timer) arm();
+  }
+  return moved;
+}
+
+function armSweep() {
+  if (!(SWEEP_INTERVAL_MS > 0) || sweepTimer) return;
+  sweepTimer = setTimeout(async () => {
+    sweepTimer = null;
+    try { await sweepProjectChats(); } catch (e) { console.error(`[projectchats] sweep: ${e.message}`); }
+    armSweep();
+  }, SWEEP_INTERVAL_MS);
+  sweepTimer.unref?.();
+}
+
+function arm() {
+  timer = setTimeout(() => {
+    timer = null;
+    flushProjectChatsAsync();
+  }, PERSIST_DELAY_MS);
+  timer.unref?.();
 }
 
 /** Coalesced write, like the task store's: bursts of tool events become one write. */
@@ -186,14 +267,14 @@ export function persistHolder(holder) {
     const key = holderKey(holder.project, holder.machine);
     // A holder handed in that is not the registered one still gets saved.
     if (!holders.has(key)) holders.set(key, holder);
+    ser.invalidate(holder);
+  } else {
+    ser.invalidateAll();
   }
   dirty = true;
+  armSweep();
   if (timer) return;
-  timer = setTimeout(() => {
-    timer = null;
-    flushProjectChats();
-  }, PERSIST_DELAY_MS);
-  timer.unref?.();
+  arm();
 }
 
 const machineOfHolder = (holder) => machineFor(holder.machine ?? 'local', holder.project);

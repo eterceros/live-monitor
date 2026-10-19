@@ -11,6 +11,8 @@ import path from 'node:path';
  */
 const DIR = mkdtempSync(path.join(tmpdir(), 'hfsmon-store-'));
 process.env.HFSMON_DATA_DIR = DIR;
+// La ventana de producción es de 3 s; estas pruebas esperan la de antes (los tiempos de abajo).
+process.env.HFSMON_PERSIST_DELAY_MS = '250';
 const FILE = path.join(DIR, 'tasks.json');
 const { store } = await import('../src/store.js');
 after(() => {
