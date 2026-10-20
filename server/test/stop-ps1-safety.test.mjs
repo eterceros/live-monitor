@@ -63,9 +63,9 @@ require('net').createServer().listen(Number(process.argv[2]), '127.0.0.1');
 setTimeout(() => process.exit(0), 3 * 60 * 1000);
 `;
 
-function makeSandbox(name, { config = {}, local = null, flushStatus = 200 } = {}) {
+function makeSandbox(name, { config = {}, local = null, flushStatus = 200, repoName = 'repo' } = {}) {
   const dir = path.join(os.tmpdir(), `hfsmon-stopsafe-${Date.now().toString(36)}-${name}`);
-  const repo = path.join(dir, 'repo');
+  const repo = path.join(dir, repoName);
   fs.mkdirSync(path.join(repo, 'server', 'src'), { recursive: true });
   fs.mkdirSync(path.join(repo, 'helper'), { recursive: true });
   fs.copyFileSync(path.join(REPO, 'stop.ps1'), path.join(repo, 'stop.ps1'));
@@ -197,6 +197,66 @@ describe('stop.ps1 (sandbox, stub processes on free ports)', { skip: SKIP }, () 
       assert.equal(swept.code, 0, swept.output);
       assert.match(swept.output, /cerrando/);
       assert.ok(await waitFor(() => !alive(own.pid), 5000), `the board's own listener was closed:\n${swept.output}`);
+    } finally { await cleanup(ctx); }
+  });
+});
+
+describe('stop.ps1 sweep: ownership is decided at folder boundaries', { skip: SKIP }, () => {
+  const reachable = (port) => new Promise((res) => { const s = net.connect(port, '127.0.0.1', () => { s.destroy(); res(true); }); s.on('error', () => res(false)); });
+
+  /** Starts `node <script> <port>` (cwd as given), sweeps exactly that port, says whether it was closed. */
+  async function sweepOne(ctx, script, cwd, { nodeArgs = [] } = {}) {
+    const port = await freePort();
+    const child = spawn(process.execPath, [...nodeArgs, script, String(port)], { cwd, stdio: 'ignore', windowsHide: true });
+    ctx.children.push(child);
+    assert.ok(await waitFor(() => reachable(port), 10_000), `the stub listener is up (${script})`);
+    const r = await runStop(ctx, ['-PortFrom', String(port), '-PortTo', String(port)]);
+    assert.equal(r.code, 0, r.output);
+    const closed = await waitFor(() => !alive(child.pid), 4000);
+    if (!closed) assert.match(r.output, /NO se toca/, 'a process left alone is listed');
+    return closed;
+  }
+
+  const put = (dir) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'listen.js'), LISTENER); return path.join(dir, 'listen.js'); };
+
+  test('a sibling folder that starts with the root\'s name is not inside it (sbx-evil vs sbx; live-monitor-wt vs live-monitor)', async () => {
+    for (const [rootName, sibling] of [['sbx', 'sbx-evil'], ['live-monitor', 'live-monitor-wt'], ['live-monitor', 'live-monitor-otro']]) {
+      const ctx = makeSandbox(`b-${sibling}`, { config: { port: await freePort() }, repoName: rootName });
+      try {
+        const outside = put(path.join(ctx.dir, sibling, 'x'));
+        assert.equal(await sweepOne(ctx, outside, path.dirname(outside)), false, `${sibling}\\x survives with root ${rootName}`);
+        const inside = put(path.join(ctx.repo, 'sub'));
+        assert.equal(await sweepOne(ctx, inside, path.dirname(inside)), true, `${rootName}\\sub is closed`);
+      } finally { await cleanup(ctx); }
+    }
+  });
+
+  test('case does not matter, a trailing slash does not matter, ".." is resolved', async () => {
+    const ctx = makeSandbox('b-case', { config: { port: await freePort(), project: { worktreeRoot: '__WT__' } }, repoName: 'sbx' });
+    try {
+      const wt = path.join(ctx.dir, 'wt');
+      fs.writeFileSync(path.join(ctx.repo, 'config.json'), JSON.stringify({ port: await freePort(), project: { worktreeRoot: `${wt}\\` } }));   // trailing slash
+      const insideWt = put(path.join(wt, 'task-1'));
+      assert.equal(await sweepOne(ctx, insideWt, path.dirname(insideWt)), true, 'under a worktree root written with a trailing slash');
+      const nearWt = put(path.join(ctx.dir, 'wt-other'));
+      assert.equal(await sweepOne(ctx, nearWt, path.dirname(nearWt)), false, 'wt-other is not under wt\\');
+      const own = put(path.join(ctx.repo, 'helper2'));
+      assert.equal(await sweepOne(ctx, own.toUpperCase().replace(/\.JS$/, '.js'), ctx.repo), true, 'upper-case spelling of the board\'s own path');
+      const dotted = put(path.join(ctx.repo, 'helper3'));
+      const viaDots = path.join(ctx.repo, 'helper3', '..', 'helper3', 'listen.js');
+      assert.equal(await sweepOne(ctx, viaDots, ctx.repo), true, '".." inside an absolute path is resolved');
+      const escape = path.join(ctx.repo, '..', 'sbx-evil', 'listen.js');
+      put(path.join(ctx.dir, 'sbx-evil'));
+      assert.equal(await sweepOne(ctx, escape, ctx.repo), false, 'a ".." that climbs out of the root is outside');
+      void dotted;
+    } finally { await cleanup(ctx); }
+  });
+
+  test('a process whose path cannot be told (relative) is listed, not closed', async () => {
+    const ctx = makeSandbox('b-rel', { config: { port: await freePort() }, repoName: 'sbx' });
+    try {
+      put(path.join(ctx.repo, 'rel'));
+      assert.equal(await sweepOne(ctx, 'listen.js', path.join(ctx.repo, 'rel')), false, 'started as «node listen.js» from inside the root: unknowable, left alone');
     } finally { await cleanup(ctx); }
   });
 });

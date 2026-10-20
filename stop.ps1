@@ -146,15 +146,54 @@ foreach ($f in @((Join-Path $root 'server\data\projects.json'))) {
     }
   } catch { }
 }
+# A full path, no trailing slash, lower case (Windows folds case); $null when it is not a
+# path that can be made absolute without knowing the process's working folder.
+function ConvertTo-FullPathOrNull([string]$text) {
+  $t = $text.Trim().Trim('"').Trim("'")
+  if (-not $t) { return $null }
+  if (-not ($t -match '^[A-Za-z]:[\\/]' -or $t -match '^\\\\')) { return $null }   # relative: unknowable
+  try { return [IO.Path]::GetFullPath($t).TrimEnd('\').ToLower() } catch { return $null }
+}
+
+# Equal to the folder, or inside it: the prefix must end at a folder boundary, so
+# C:\x\sbx-evil is not inside C:\x\sbx and C:\x\live-monitor-wt is not inside C:\x\live-monitor.
+function Test-InsideFolder([string]$path, [string]$folder) {
+  return ($path -eq $folder) -or $path.StartsWith($folder + '\')
+}
+
+$ownFull = New-Object System.Collections.Generic.List[string]
+foreach ($d in $ownDirs) {
+  $dd = [string]$d
+  if ($dd -and -not ($dd -match '^[A-Za-z]:[\\/]' -or $dd -match '^\\\\')) { $dd = Join-Path $root $dd }
+  $full = ConvertTo-FullPathOrNull $dd
+  if ($full) { $ownFull.Add($full) }
+}
+
 function Test-BoardOwned([int]$ownerPid) {
   $info = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
   if (-not $info) { return $false }
   $imageName = [IO.Path]::GetFileNameWithoutExtension([string]$info.Name).ToLower()
   if ($imageName -ne 'node' -and $imageName -ne 'hfs') { return $false }
-  $where = (([string]$info.CommandLine) + ' ' + ([string]$info.ExecutablePath)).Replace('/', '\').ToLower()
-  foreach ($d in $ownDirs) {
-    $dir = ([string]$d).Replace('/', '\').TrimEnd('\').ToLower()
-    if ($dir -and $where.Contains($dir)) { return $true }
+  # Every absolute path the process was started with: its program and each token of its
+  # command line (also the part after '=' of --flag=C:\path). A relative one says nothing.
+  $paths = New-Object System.Collections.Generic.List[string]
+  $exe = ConvertTo-FullPathOrNull ([string]$info.ExecutablePath)
+  if ($exe) { $paths.Add($exe) }
+  foreach ($m in [regex]::Matches([string]$info.CommandLine, '"([^"]*)"|(\S+)')) {
+    $tok = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
+    $candidates = @($tok)
+    if ($tok.Contains('=')) { $candidates += $tok.Substring($tok.IndexOf('=') + 1) }
+    foreach ($c in $candidates) {
+      $full = ConvertTo-FullPathOrNull $c
+      if ($full) { $paths.Add($full) }
+    }
+  }
+  # Owned when any of those paths is the board's folder or inside it. A process whose paths
+  # cannot be told (all relative) is not owned: it is listed, not closed.
+  foreach ($pth in $paths) {
+    foreach ($dir in $ownFull) {
+      if (Test-InsideFolder $pth $dir) { return $true }
+    }
   }
   return $false
 }
