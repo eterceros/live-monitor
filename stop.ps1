@@ -11,7 +11,10 @@ param(
   # Skips the upgrade lock: upgrade.ps1 runs the port sweep while it holds it.
   [switch]$Force,
   # The port the board listens on; 0 reads config.json (7420 if it says nothing).
-  [int]$BoardPort = 0
+  [int]$BoardPort = 0,
+  # By default a board that ANSWERS "I could not save" (disk full, a scanner holding
+  # the file) is left running: closing it would lose what it holds in memory.
+  [switch]$IgnoreSaveFailure
 )
 
 $root = $PSScriptRoot
@@ -62,18 +65,49 @@ if (Test-Path -LiteralPath $pidFile) {
   if ($isBoard) {
     # Ask the board to save first: taskkill /F skips every exit handler, and the
     # store keeps the last few seconds of changes in memory. The call answers once
-    # the files are written; if it cannot be made the board is closed anyway.
+    # the files are written. If the board does not answer at all it is closed anyway
+    # (it could not save in any case); if it answers that the save FAILED it is left
+    # running, loudly, unless -IgnoreSaveFailure.
+    # The port, as the board reads it: HFSMON_CONFIG (or config.json), then the
+    # config.local.json beside it.
     $boardPort = 7420
-    try {
-      $cfg = [IO.File]::ReadAllText((Join-Path $root 'config.json')) | ConvertFrom-Json
-      if ($cfg.port) { $boardPort = [int]$cfg.port }
-    } catch { }
+    $cfgFile = $env:HFSMON_CONFIG
+    if (-not $cfgFile) { $cfgFile = Join-Path $root 'config.json' }
+    $localFile = [regex]::Replace($cfgFile, '\.json$', '.local.json')
+    foreach ($f in @($cfgFile, $localFile)) {
+      try {
+        $cfg = [IO.File]::ReadAllText($f) | ConvertFrom-Json
+        if ($cfg.port) { $boardPort = [int]$cfg.port }
+      } catch { }
+    }
     if ($BoardPort -gt 0) { $boardPort = $BoardPort }
-    try {
-      $r = Invoke-WebRequest -UseBasicParsing -Method Post -TimeoutSec 20 -Uri "http://127.0.0.1:$boardPort/api/flush"
-      Write-Host "El tablero guardo sus datos (HTTP $($r.StatusCode))."
-    } catch {
-      Write-Host "No se pudo pedir al tablero que guarde ($($_.Exception.Message)); se cierra igualmente."
+    $saved = $false
+    $refused = $false
+    for ($try = 1; $try -le 2 -and -not $saved; $try++) {
+      try {
+        $r = Invoke-WebRequest -UseBasicParsing -Method Post -TimeoutSec 20 -Uri "http://127.0.0.1:$boardPort/api/flush"
+        Write-Host "El tablero guardo sus datos (HTTP $($r.StatusCode))."
+        $saved = $true
+      } catch {
+        $code = 0
+        try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+        if ($code -eq 500) {
+          # 500 is the board saying it tried and could not; any other answer (404 from a
+          # build without the route, 401/403) means no save was asked for: close as before.
+          $refused = $true
+          $detail = ''
+          try { $detail = $_.ErrorDetails.Message } catch { }
+          Write-Host "!! EL TABLERO NO PUDO GUARDAR SUS DATOS (intento $try de 2): $detail"
+          if ($try -lt 2) { Start-Sleep -Seconds 2 }
+        } else {
+          Write-Host "No se pudo pedir al tablero que guarde ($($_.Exception.Message)); se cierra igualmente."
+          break
+        }
+      }
+    }
+    if ($refused -and -not $saved -and -not $IgnoreSaveFailure) {
+      Write-Host "!! El tablero (PID $procId) sigue corriendo para no perder lo que tiene en memoria. Libera el disco o el archivo bloqueado y repite, o usa -IgnoreSaveFailure para cerrarlo igualmente."
+      exit 3
     }
     # /T also kills the claude / npm / playwright children of active phases
     taskkill /PID $procId /T /F | Out-Null

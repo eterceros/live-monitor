@@ -9,7 +9,7 @@ import { ensureDetachedWorktree, refreshDetachedWorktree } from './worktree.js';
 import { PROJECT_WORKTREE_DIR, isHolderKey, parseHolderKey } from './keys.js';
 import { SerCache, objectChunks, writeAtomicSync, writeChunksAtomic } from './persistcache.js';
 import {
-  SPLIT_MARK, coreText, heavyChunks, heavyItems, heavyPath, mergeHeavy, readHeavy, quarantine, ensureHeavyDir, backupOnce,
+  SPLIT_MARK, coreText, heavyChunks, heavyItems, heavyPath, mergeHeavy, readHeavy, quarantine, ensureHeavyDir, backupOnce, retireLegacyName,
 } from './splitfmt.js';
 
 // Pure helpers live in `keys.js` (the runner imports them and must not pull in
@@ -143,10 +143,11 @@ function loadHeavy(f, key, holder) {
   const r = readHeavy(DATA_DIR, SCOPE, key);
   if (!r.ok) {
     const aside = r.reason === 'corrupt' ? quarantine(r.file) : null;
-    console.error(`[projectchats] ${f}: el chat ${key} está dividido pero ${r.file} está ${r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); movido a ${aside}`}; arranca sin historial (la copia .pre-split.bak lo conserva)`);
+    console.error(`[projectchats] ${f}: el chat ${key} está dividido pero ${r.file} está ${r.foreign ? 'a nombre de otro id (no se lee)' : r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); movido a ${aside}`}; arranca sin historial (la copia .pre-split.bak lo conserva)`);
     delete holder[SPLIT_MARK];
     return;
   }
+  if (r.legacyName) console.error(`[projectchats] ${f}: el chat ${key} se leyó de ${r.file}, con el nombre antiguo; se reescribe con el nombre nuevo`);
   const lost = mergeHeavy(holder, r.heavy);
   if (lost.log || lost.chats.length) {
     console.error(`[projectchats] ${f}: el chat ${key} perdió en ${r.file}: ${lost.log ? 'el log ' : ''}${lost.chats.length ? `mensajes de ${lost.chats.join(', ')}` : ''}`);
@@ -266,7 +267,7 @@ function* arraysOf(holder) {
 
 /** A holder's log and messages as pieces; also remembers how long each array was. */
 function heavyOf(holder) {
-  const out = heavyChunks(holder, (item) => itemSer.text(item));
+  const out = heavyChunks(holder, (item) => itemSer.text(item), holderKey(holder.project, holder.machine));
   for (const arr of arraysOf(holder)) lens.set(arr, arr.length);
   return out;
 }
@@ -308,6 +309,7 @@ function writeHeavySync(key, holder, { verify = false } = {}) {
   writeAtomicSync(f, chunks);
   landed.set(f, seq);
   if (verify && readFileSync(f, 'utf8') !== chunks.join('')) throw new Error(`${f}: what was written does not match what was read back`);
+  retireLegacyName(DATA_DIR, SCOPE, key, [...holders.keys()]);
 }
 
 function writeCoreSync(opts) {
@@ -373,9 +375,10 @@ function adoptMoved(keys) {
  * Writes the project chats now, synchronously (the way out): tmp + rename, so a
  * kill never leaves half a file. It first re-serializes every holder and
  * compares with the cached text, so a holder changed without `persistHolder`
- * is saved too.
+ * is saved too. Returns the writes that failed, `[{file, error}]` (empty: all on disk).
  */
 export function flushProjectChats() {
+  const failures = [];
   if (timer) {
     clearTimeout(timer);
     timer = null;
@@ -388,7 +391,7 @@ export function flushProjectChats() {
     dirty = true;
     for (const k of inflightKeys) heavyDirty.add(k);
   }
-  if (!dirty) return;
+  if (!dirty) return failures;
   dirty = false;
   const keys = [...heavyDirty];
   heavyDirty.clear();
@@ -398,7 +401,10 @@ export function flushProjectChats() {
     dirty = true;
     keys.forEach((k) => heavyDirty.add(k));
     console.error(`[projectchats] no se pudo guardar ${file()}: ${e.message}`);
+    failures.push({ file: file(), error: e.message });
+    if (!timer) arm();   // try again soon
   }
+  return failures;
 }
 
 /** The timer's write: same files, written a piece per turn so the loop is never held for all of it. */
@@ -424,7 +430,10 @@ async function flushProjectChatsAsync() {
       const parts = heavyOf(holder);       // a snapshot: immutable strings from here on
       ensureHeavyDir(f);
       const seq = nextSeq(f);
-      if (await writeChunksAtomic(f, parts, () => current(f, seq))) landed.set(f, seq);
+      if (await writeChunksAtomic(f, parts, () => current(f, seq))) {
+        landed.set(f, seq);
+        retireLegacyName(DATA_DIR, SCOPE, key, [...holders.keys()]);
+      }
     }
     const f = file();
     const parts = coreChunks();

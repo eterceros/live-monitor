@@ -85,13 +85,29 @@ app.use(accessGuard);
 // skips every exit handler, and the store keeps the last few seconds in memory.
 // Direct loopback only (never through a proxy), and before the upgrade guard: a
 // flush is exactly what an upgrade wants too. It answers when the files are written.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const hostnameOf = (hostPort) => String(hostPort ?? '').replace(/:\d+$/, '').toLowerCase();
 app.post('/api/flush', (req, res) => {
-  if (!isDirectLoopback(req)) return res.status(403).json({ error: 'local only' });
+  // Direct loopback on the socket AND a loopback Host (a rebinding page talks to a
+  // loopback socket under its own name) AND no foreign Origin (a browser tab).
+  const origin = req.get('origin');
+  let originHost = '';
+  try { originHost = origin ? new URL(origin).hostname : ''; } catch { originHost = 'invalid'; }
+  const local = isDirectLoopback(req)
+    && LOOPBACK_HOSTS.has(hostnameOf(req.get('host')))
+    && (!origin || LOOPBACK_HOSTS.has(originHost) || LOOPBACK_HOSTS.has(`[${originHost}]`));
+  if (!local) return res.status(403).json({ error: 'local only' });
   try {
-    store.flush();
+    // flush() does not throw for a write that failed (the board must not die of a full
+    // disk); it says which ones failed. «Saved» is only said when nothing did.
+    const failures = store.flush();
+    if (failures.length) {
+      const why = failures.map((f) => `${String(f.file).split(/[\\/]/).pop()}: ${f.error}`).join('; ');
+      return res.status(500).json({ ok: false, error: `could not save: ${why}`, failures });
+    }
     return res.json({ ok: true });
   } catch (e) {
-    return res.status(500).json({ error: e.message });
+    return res.status(500).json({ ok: false, error: e.message });
   }
 });
 // The file viewer: read-only, GET only, so it needs no body parser.

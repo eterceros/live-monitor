@@ -84,15 +84,17 @@ export const coreText = (entry) => JSON.stringify(coreOf(entry));
  *
  * @param {object} entry
  * @param {(item: object) => string} itemText
+ * @param {string|number} [key] the entry's id in its main file; written into the data file so a
+ *   reader can tell it is the right one (two ids can fold to one file name on Windows).
  */
-export function heavyChunks(entry, itemText) {
+export function heavyChunks(entry, itemText, key) {
   const out = new ChunkBuilder();
   const arr = (a) => {
     out.add('[');
     for (let i = 0; i < a.length; i++) out.add(`${i ? ',' : ''}${itemText(a[i])}`);
     out.add(']');
   };
-  out.add(`{"v":${HEAVY_VERSION},"log":`);
+  out.add(`{"v":${HEAVY_VERSION},${key === undefined ? '' : `"key":${JSON.stringify(String(key))},`}"log":`);
   if (Array.isArray(entry.log)) arr(entry.log); else out.add('[]');
   out.add(',"messages":{');
   let first = true;
@@ -174,9 +176,33 @@ export function readHeavy(dataDir, scope, id) {
   try {
     const heavy = JSON.parse(readFileSync(file, 'utf8'));
     if (!isObj(heavy)) throw new Error('not an object');
-    return { ok: true, heavy, file };
+    // The file under the OLD name may be another id's on a case-folding file system.
+    if (heavy.key !== undefined && String(heavy.key) !== String(id)) return { ok: false, reason: 'missing', file, foreign: true };
+    return { ok: true, heavy, file, legacyName: file !== heavyPath(dataDir, scope, id) };
   } catch (e) {
     return { ok: false, reason: 'corrupt', file, error: e.message };
+  }
+}
+
+/**
+ * After an entry's data file has been written under its current name: the file it
+ * had under the pre-case-proof name is renamed to `<name>.legacy.bak` (never
+ * deleted), unless it may belong to another id — its `key` says another one, or
+ * another id in `siblingIds` folds to the same name and the file says nothing.
+ * Returns the new path, or null when there was nothing to do.
+ */
+export function retireLegacyName(dataDir, scope, id, siblingIds = []) {
+  const now = heavyPath(dataDir, scope, id);
+  const old = heavyPathLegacy(dataDir, scope, id);
+  if (old === now || !existsSync(old)) return null;
+  const fold = (x) => safeNameLegacy(x).toLowerCase();
+  let key;
+  try { key = JSON.parse(readFileSync(old, 'utf8')).key; } catch { return null; }
+  if (key !== undefined ? String(key) !== String(id) : siblingIds.some((s) => String(s) !== String(id) && fold(s) === fold(id))) return null;
+  for (let n = 0; ; n++) {
+    const dest = `${old}.legacy${n ? `.${n}` : ''}.bak`;
+    if (existsSync(dest)) continue;
+    try { renameSync(old, dest); return dest; } catch { return null; }
   }
 }
 

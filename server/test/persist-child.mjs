@@ -33,11 +33,20 @@ if (mode === 'hammer') {
   store.addLog(t, 'estado', 'linea en vuelo');
   store.addChat(t, null, 'user', 'mensaje en vuelo');
   const holder = pc._loadedHoldersForTests()[0]?.[1];
-  if (holder) store.addLog(holder, 'estado', 'linea de holder en vuelo');
+  if (holder) {
+    store.addLog(holder, 'estado', 'linea de holder en vuelo');
+    store.addChat(holder, null, 'user', 'mensaje de holder en vuelo');
+  }
   store.persist(t);
   store.flushAsync();                    // takes the dirty lists, awaits the file
   pc._flushProjectChatsAsyncForTests();
   store.flush();                         // must write again what is in flight
+  process.exit(0);
+} else if (mode === 'exit-late') {
+  // upgrade.js: the last flush, then a change, then process.exit() (which fires `exit`, not `beforeExit`).
+  store.flush();
+  const t = Object.values(store.tasks)[0];
+  store.addLog(t, 'estado', 'cambio despues del ultimo flush');
   process.exit(0);
 } else if (mode === 'boot') {
   // Boots (migrations run), writes everything, leaves.

@@ -166,6 +166,9 @@ class Store extends EventEmitter {
   #seqStarted = new Map();
   #seqLanded = new Map();
   #sweepTimer = null;
+  /** Counts the changes announced; `#flushedVersion` is the count at the last successful flush. */
+  #version = 0;
+  #flushedVersion = 0;
   /** Registered by `projectchats.js`: the store cannot import it (it imports the store). */
   #holderPersister = null;
   #holderFlusher = null;
@@ -257,9 +260,21 @@ class Store extends EventEmitter {
     // A kill leaves the last burst unwritten otherwise. `beforeExit` covers the
     // ordinary end, the signals cover the way this board is actually stopped.
     process.once('beforeExit', () => this.flush());
+    // `process.exit()` (upgrade.js after handing over to the script, a signal handler) fires
+    // `exit` but not `beforeExit`. Synchronous work is all an exit handler may do, and flush()
+    // is. It is skipped when nothing changed since the last successful flush, so the usual
+    // signal -> flush -> process.exit(0) does not serialize everything twice.
+    process.once('exit', () => {
+      if (this.#version !== this.#flushedVersion || this.#writing || this.#dirty.size) this.flush();
+    });
+    this.#flushedVersion = this.#version;
     this.#armSweep();
-    for (const signal of ['SIGINT', 'SIGTERM']) {
-      process.once(signal, () => { this.flush(); process.exit(0); });
+    // The ways the board is stopped: Ctrl+C, the service manager, a closed console (SIGHUP) and,
+    // on Windows, Ctrl+Break or a closed console window (SIGBREAK).
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+      try {
+        process.once(signal, () => { this.flush(); process.exit(0); });
+      } catch { /* a signal this platform does not have */ }
     }
   }
 
@@ -348,10 +363,11 @@ class Store extends EventEmitter {
     const r = readHeavy(DATA_DIR, scopeOf(file), fileKey);
     if (!r.ok) {
       const aside = r.reason === 'corrupt' ? quarantine(r.file) : null;
-      console.error(`[store] ${file}: la tarea ${fileKey} está dividida pero ${r.file} está ${r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); movido a ${aside}`}; arranca sin historial (la copia .pre-split.bak lo conserva)`);
+      console.error(`[store] ${file}: la tarea ${fileKey} está dividida pero ${r.file} está ${r.foreign ? 'a nombre de otro id (no se lee)' : r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); movido a ${aside}`}; arranca sin historial (la copia .pre-split.bak lo conserva)`);
       delete task[SPLIT_MARK];
       return;
     }
+    if (r.legacyName) console.error(`[store] ${file}: la tarea ${fileKey} se leyó de ${r.file}, con el nombre antiguo; se reescribe con el nuevo`);
     const lost = mergeHeavy(task, r.heavy);
     if (lost.log || lost.chats.length) {
       console.error(`[store] ${file}: la tarea ${fileKey} perdió en ${r.file}: ${lost.log ? 'el log ' : ''}${lost.chats.length ? `mensajes de ${lost.chats.join(', ')}` : ''}`);
@@ -385,6 +401,7 @@ class Store extends EventEmitter {
    * distrusts everything the task has and serializes it again.
    */
   persist(task = null, hint = null, changed = null) {
+    this.#version += 1;
     if (task?.kind === 'project') {
       this.#holderPersister?.(task, hint, changed);
       return;
@@ -415,6 +432,7 @@ class Store extends EventEmitter {
    * every project and every task.
    */
   #markDirty(task, full = true) {
+    this.#version += 1;
     const projectId = task && isProjectId(task.project) ? task.project : null;
     if (task) {
       // Its cached text is stale from this moment; the next write serializes it again.
@@ -453,7 +471,7 @@ class Store extends EventEmitter {
 
   /** `task`'s log and messages as pieces; also remembers how long each array was. */
   #heavyOf(task) {
-    const chunks = heavyChunks(task, (item) => this.#itemSer.text(item));
+    const chunks = heavyChunks(task, (item) => this.#itemSer.text(item), task.issue);
     for (const arr of this.#arraysOf(task)) this.#lens.set(arr, arr.length);
     return chunks;
   }
@@ -552,9 +570,15 @@ class Store extends EventEmitter {
    * (signals, restart, upgrade, tests): it first re-serializes every task and
    * compares with the cached text, so a task changed without `persist(task)`
    * is saved here too, even when nothing declared its project dirty.
+   *
+   * Returns the writes that failed, `[{file, error}]`: empty when everything is on
+   * disk. The failed projects stay dirty and a retry is armed, but the caller (the
+   * `/api/flush` route stop.ps1 uses) must not take «no exception» for «saved».
+   *
+   * @returns {{file: string, error: string}[]}
    */
   flush() {
-    this.#holderFlusher?.();
+    const failures = [...(this.#holderFlusher?.() ?? [])];
     // An explicit write makes the scheduled one redundant, and leaving it armed
     // means firing into a directory that may not be there any more.
     if (this.#timer) {
@@ -567,7 +591,10 @@ class Store extends EventEmitter {
     // written again here; the sequence check then drops the older in-flight text.
     for (const id of this.#inflightProjects) this.#dirty.add(id);
     for (const k of this.#inflightKeys) this.#heavyDirty.add(k);
-    if (!this.#dirty.size) return;
+    if (!this.#dirty.size) {
+      if (!failures.length) this.#flushedVersion = this.#version;
+      return failures;
+    }
     const pending = [...this.#dirty];
     this.#dirty.clear();
 
@@ -582,8 +609,15 @@ class Store extends EventEmitter {
         this.#dirty.add(projectId);
         for (const k of keys) this.#heavyDirty.add(k);
         console.error(`[store] no se pudo guardar ${tasksFile(projectId)}: ${e.message}`);
+        failures.push({ file: tasksFile(projectId), error: e.message });
       }
     }
+    if (failures.length) {
+      if (!this.#timer) this.#arm(PERSIST_DELAY_MS);   // try again soon
+    } else {
+      this.#flushedVersion = this.#version;
+    }
+    return failures;
   }
 
   #nextSeq(file) {

@@ -188,8 +188,16 @@ test('un flush síncrono durante una escritura asíncrona gana: el texto viejo n
 test('salida ordenada con una escritura en vuelo y SIN cambios nuevos: flush() no da por escrito lo que va a medias', async () => {
   const dir = tempDir('hfsmon-persist-inflight-');
   cpSync(DATA_DIR, dir, { recursive: true });
+  // A project chat too, already in the split format, so its async write is the one in flight.
+  const holder = { kind: 'project', project: 'hfs', machine: 'local', title: 'Proyecto', worktreePath: null, head: null,
+    log: [{ ts: 'x', phase: 'p', line: 'antes' }], chats: [{ id: 'h1', title: 'Main', messages: [{ id: 'hm', role: 'user', text: 'hola', ts: 'x' }] }] };
+  writeFileSync(path.join(dir, 'projectchats.json'), JSON.stringify({ version: 1, holders: { 'hfs@local': holder } }));
+  assert.equal((await runChild(dir, 'boot')).code, 0);       // converts it
   const r = await runChild(dir, 'inflight');
   assert.equal(r.code, 0);
+  const chats = readTasksFileMerged(path.join(dir, 'projectchats.json'), { key: (x) => x.holders }).holders['hfs@local'];
+  assert.equal(chats.log.at(-1).line, 'linea de holder en vuelo', 'the project chat that was in flight is on disk too');
+  assert.equal(chats.chats[0].messages.at(-1).text, 'mensaje de holder en vuelo');
   const disk = readTasksFileMerged(path.join(dir, 'tasks.json'));
   const first = Object.values(disk)[0];
   assert.equal(first.title, 'cambiado justo antes de salir');
@@ -245,4 +253,13 @@ test('apagado en mitad de escritura (kill -9): el archivo nunca queda truncado n
   }
   assert.ok(killedMidWrite >= 1, `ningún kill cayó con un temporal a medias (${killedMidWrite}/${ROUNDS}): la prueba no probó nada`);
   process.stderr.write(`[persist-atomic] kills con escritura a medias: ${killedMidWrite}/${ROUNDS}\n`);
+});
+
+test('process.exit() tras el último flush también guarda lo que cambió después (upgrade.js)', async () => {
+  const dir = tempDir('hfsmon-persist-exitlate-');
+  cpSync(DATA_DIR, dir, { recursive: true });
+  const r = await runChild(dir, 'exit-late');
+  assert.equal(r.code, 0);
+  const first = Object.values(readTasksFileMerged(path.join(dir, 'tasks.json')))[0];
+  assert.equal(first.log.at(-1).line, 'cambio despues del ultimo flush');
 });

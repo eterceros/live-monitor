@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { tempDir } from './teardown.mjs';
-import { readTasksFileMerged, coreOf, heavyChunks, mergeHeavy, SPLIT_MARK, heavyPath, readHeavy, backupOnce } from '../src/splitfmt.js';
+import { readTasksFileMerged, coreOf, heavyChunks, mergeHeavy, SPLIT_MARK, heavyPath, readHeavy, backupOnce, retireLegacyName } from '../src/splitfmt.js';
 import { migrateChats, resetChatsOnBoot } from '../src/chats.js';
 
 /**
@@ -337,4 +337,30 @@ test('sidecar names are case-proof: ids that differ only in case get different f
   writeFileSync(path.join(dir, 'taskdata', 'projectchats', 'Proj@PC.json'), '{"v":1,"log":[],"messages":{}}');
   assert.equal(readHeavy(dir, 'projectchats', 'Proj@PC').ok, true);
   assert.equal(readHeavy(dir, 'projectchats', 'Proj@PD').reason, 'missing');
+});
+
+test('the old-name data file is retired to .legacy.bak after the new name is written, and only when it is this id\'s', () => {
+  const dir = tempDir('hfsmon-legacyname-');
+  const folder = path.join(dir, 'taskdata', 'projectchats');
+  mkdirSync(folder, { recursive: true });
+  const legacy = path.join(folder, 'proj@PC.json');
+  // 1. Written with a key that says it is ours: renamed, never deleted.
+  writeFileSync(legacy, JSON.stringify({ v: 1, key: 'proj@PC', log: [], messages: {} }));
+  const dest = retireLegacyName(dir, 'projectchats', 'proj@PC', ['proj@PC']);
+  assert.ok(dest?.endsWith('proj@PC.json.legacy.bak') && existsSync(dest) && !existsSync(legacy));
+  // 2. Its key says another id: left where it is.
+  writeFileSync(legacy, JSON.stringify({ v: 1, key: 'proj@pc', log: [], messages: {} }));
+  assert.equal(retireLegacyName(dir, 'projectchats', 'proj@PC', ['proj@PC', 'proj@pc']), null);
+  assert.ok(existsSync(legacy));
+  // 3. No key (written by the first version) and another id folds to the same name: ambiguous, left.
+  writeFileSync(legacy, JSON.stringify({ v: 1, log: [], messages: {} }));
+  assert.equal(retireLegacyName(dir, 'projectchats', 'proj@PC', ['proj@PC', 'proj@pc']), null);
+  assert.ok(existsSync(legacy));
+  // 4. A file that names another id is not read as ours, whatever the file system folded.
+  writeFileSync(legacy, JSON.stringify({ v: 1, key: 'proj@pc', log: [{ ts: 'x' }], messages: {} }));
+  const r = readHeavy(dir, 'projectchats', 'proj@PC');
+  assert.equal(r.ok, false);
+  assert.equal(r.foreign, true);
+  // 5. New files carry their key.
+  assert.equal(JSON.parse(heavyChunks({ log: [], chats: [] }, (x) => JSON.stringify(x), 'proj@PC').join('')).key, 'proj@PC');
 });

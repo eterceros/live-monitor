@@ -2,7 +2,8 @@ import './isolate.mjs';
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -77,19 +78,57 @@ after(async () => {
   await removeTree(dir);
 });
 
-test('POST /api/flush from the machine itself saves and answers ok', async () => {
-  const res = await fetch(url('/api/flush'), { method: 'POST' });
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true });
-  const main = JSON.parse(readFileSync(path.join(dataDir, 'tasks.json'), 'utf8'));
-  assert.equal(main[5].persistSplit, 1, 'the board wrote its files');
+const post = (p, body) => fetch(url(p), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+const mainFile = () => JSON.parse(readFileSync(path.join(dataDir, 'tasks.json'), 'utf8'));
+
+/** A POST with the Host / Origin we choose (fetch will not let a script set Host). */
+const rawPost = (headers) => new Promise((resolve, reject) => {
+  const req = http.request({ host: '127.0.0.1', port, path: '/api/flush', method: 'POST', headers }, (res) => {
+    res.resume();
+    res.on('end', () => resolve(res.statusCode));
+  });
+  req.on('error', reject);
+  req.end();
 });
 
-test('POST /api/flush is refused when a proxy sits in front (forwarded headers)', async () => {
+test('a real change made through the API reaches the disk when /api/flush answers, not before', async () => {
+  assert.equal(mainFile()[5].design, false, 'the task starts without the flag');
+  assert.equal((await post('/api/projects/hfs/tasks/5/design', { on: true })).status, 200);
+  assert.notEqual(mainFile()[5].design, true, 'still inside the 3 s window: only in memory');
+  const res = await post('/api/flush');
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+  assert.equal(mainFile()[5].design, true, 'on disk once the route has answered');
+  assert.equal(mainFile()[5].persistSplit, 1, 'in the split format');
+});
+
+test('POST /api/flush is refused when a proxy sits in front, for a foreign Host and for a foreign Origin', async () => {
   for (const headers of [{ 'x-forwarded-for': '100.64.0.9' }, { forwarded: 'for=100.64.0.9' }, { 'tailscale-user-login': 'x@y' }]) {
     const res = await fetch(url('/api/flush'), { method: 'POST', headers });
     assert.ok([401, 403].includes(res.status), `refused (got ${res.status}): ${JSON.stringify(headers)}`);
   }
+  assert.ok([401, 403].includes(await rawPost({ host: 'evil.example' })), 'a rebinding page: loopback socket, foreign Host');
+  assert.ok([401, 403].includes(await rawPost({ host: `127.0.0.1:${port}`, origin: 'http://evil.example' })), 'a browser tab of another site');
+  assert.equal(await rawPost({ host: `localhost:${port}`, origin: `http://localhost:${port}` }), 200, 'the board\'s own page is fine');
+});
+
+test('when the disk cannot be written /api/flush answers 500 with the reason, and 200 once it can', async () => {
+  // Break it for real: where the data files go there is now a regular file.
+  rmSync(path.join(dataDir, 'taskdata'), { recursive: true, force: true });
+  writeFileSync(path.join(dataDir, 'taskdata'), 'in the way');
+  assert.equal((await post('/api/projects/hfs/tasks/5/design', { on: false })).status, 200);
+  const bad = await post('/api/flush');
+  assert.equal(bad.status, 500);
+  const body = await bad.json();
+  assert.equal(body.ok, false);
+  assert.match(body.error, /could not save/);
+  assert.ok(body.failures.length >= 1 && body.failures[0].file.endsWith('tasks.json'), JSON.stringify(body.failures));
+  // Fixed: the very next flush writes it (the failure kept the project dirty).
+  rmSync(path.join(dataDir, 'taskdata'));
+  const ok = await post('/api/flush');
+  assert.equal(ok.status, 200, JSON.stringify(await ok.json().catch(() => null)));
+  assert.equal(mainFile()[5].design, false);
+  assert.equal(JSON.parse(readFileSync(path.join(dataDir, 'taskdata', 'tasks', '5.json'), 'utf8')).log[0].line, 'historia');
 });
 
 test('stop.ps1 asks the board to save before it closes it', () => {
