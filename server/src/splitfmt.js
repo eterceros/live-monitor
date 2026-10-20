@@ -175,7 +175,14 @@ export function readHeavy(dataDir, scope, id) {
   }
   try {
     const heavy = JSON.parse(readFileSync(file, 'utf8'));
-    if (!isObj(heavy)) throw new Error('not an object');
+    if (!isObj(heavy) || Array.isArray(heavy)) throw new Error('not an object');
+    // A file that parses is not necessarily one of ours. Writing a fresh data file over it
+    // would destroy whatever it is, so a wrong shape is «corrupt»: it is moved aside, not read.
+    const hasLog = Object.hasOwn(heavy, 'log');
+    const hasMessages = Object.hasOwn(heavy, 'messages');
+    if (hasLog && !Array.isArray(heavy.log)) throw new Error(`"log" is ${typeof heavy.log}, not a list`);
+    if (hasMessages && (!isObj(heavy.messages) || Array.isArray(heavy.messages))) throw new Error('"messages" is not a map of chats');
+    if (!hasLog && !hasMessages) throw new Error('neither "log" nor "messages" is there');
     // The file under the OLD name may be another id's on a case-folding file system.
     if (heavy.key !== undefined && String(heavy.key) !== String(id)) return { ok: false, reason: 'missing', file, foreign: true };
     return { ok: true, heavy, file, legacyName: file !== heavyPath(dataDir, scope, id) };
@@ -206,7 +213,7 @@ export function retireLegacyName(dataDir, scope, id, siblingIds = []) {
   }
 }
 
-/** Moves a sidecar that cannot be read aside, so a fresh write never overwrites it. */
+/** Moves a sidecar that cannot be read aside, so a fresh write never overwrites it. Null if it could not be moved. */
 export function quarantine(file) {
   const dest = `${file}.bad-${Date.now()}`;
   try { renameSync(file, dest); return dest; } catch { return null; }

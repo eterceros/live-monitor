@@ -364,3 +364,38 @@ test('the old-name data file is retired to .legacy.bak after the new name is wri
   // 5. New files carry their key.
   assert.equal(JSON.parse(heavyChunks({ log: [], chats: [] }, (x) => JSON.stringify(x), 'proj@PC').join('')).key, 'proj@PC');
 });
+
+test('a data file that parses but is not one of ours is moved aside with its real path, never written over', async () => {
+  const shapes = {
+    'no log, no messages': '{"v":1}',
+    'an array': '[]',
+    'log is a string': '{"v":1,"log":"oops","messages":{}}',
+    'messages is a list': '{"v":1,"log":[],"messages":[]}',
+    'a number': '7',
+  };
+  for (const [name, text] of Object.entries(shapes)) {
+    const dir = legacyDir();
+    assert.equal((await child(dir, 'boot')).code, 0);
+    const sidecar = path.join(dir, 'taskdata', 'tasks', '1.json');
+    writeFileSync(sidecar, text);
+    const r = await child(dir, 'dump', path.join(dir, '_dump'));
+    assert.equal(r.code, 0, `${name}: ${r.err}`);
+    assert.match(r.err, /ilegible/, name);
+    assert.ok(r.err.includes(sidecar), `${name}: the warning names the real path`);
+    assert.ok(!/undefined|null/.test(r.err.split('\n').find((l) => l.includes(sidecar)) ?? ''), `${name}: no «undefined»/«null» in the warning`);
+    const aside = readdirSync(path.join(dir, 'taskdata', 'tasks')).find((n) => n.startsWith('1.json.bad-'));
+    assert.ok(aside, `${name}: the file was kept aside`);
+    assert.equal(readFileSync(path.join(dir, 'taskdata', 'tasks', aside), 'utf8'), text, `${name}: byte for byte`);
+  }
+});
+
+test('a legitimately empty data file is still accepted as before', async () => {
+  const dir = legacyDir();
+  assert.equal((await child(dir, 'boot')).code, 0);
+  writeFileSync(path.join(dir, 'taskdata', 'tasks', '3.json'), '{"v":1,"log":[],"messages":{}}');
+  writeFileSync(path.join(dir, 'taskdata', 'tasks', '1.json'), '{"v":1,"messages":{}}');   // one of the two keys is enough
+  const r = await child(dir, 'boot');
+  assert.equal(r.code, 0, r.err);
+  assert.doesNotMatch(r.err, /ilegible/);
+  assert.ok(!readdirSync(path.join(dir, 'taskdata', 'tasks')).some((n) => n.includes('.bad-')));
+});

@@ -61,6 +61,11 @@ if ($Port -le 0) {
     $cfg = [IO.File]::ReadAllText((Join-Path $Root 'config.json'), $utf8) | ConvertFrom-Json
     if ($cfg.port) { $Port = [int]$cfg.port }
   } catch { }
+  # The board merges config.local.json over config.json; so does its port.
+  try {
+    $cfgLocal = [IO.File]::ReadAllText((Join-Path $Root 'config.local.json'), $utf8) | ConvertFrom-Json
+    if ($cfgLocal.port) { $Port = [int]$cfgLocal.port }
+  } catch { }
 }
 
 [void][IO.Directory]::CreateDirectory($logDir)
@@ -340,6 +345,29 @@ function Test-SdkBinary([string]$wantCli) {
 
 # ---- steps ------------------------------------------------------------------
 
+# Asks the board to write everything it holds before it is forced to stop (Stop-Process
+# -Force skips every exit handler). Same rule as stop.ps1: 'saved', 'refused' (the board
+# answered 500: it tried and could not, so it must NOT be killed) or 'unreachable'.
+function Request-BoardFlush {
+  try {
+    $r = Invoke-WebRequest -UseBasicParsing -Method Post -TimeoutSec 20 -Uri "http://127.0.0.1:$Port/api/flush"
+    Write-Log "the board saved its data (HTTP $($r.StatusCode))"
+    return 'saved'
+  } catch {
+    $code = 0
+    try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+    if ($code -eq 500) {
+      $detail = ''
+      try { $detail = (New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())).ReadToEnd() } catch { }
+      if (-not $detail) { try { $detail = $_.ErrorDetails.Message } catch { } }
+      Write-Log "THE BOARD COULD NOT SAVE ITS DATA: $detail"
+      return 'refused'
+    }
+    Write-Log "could not ask the board to save ($($_.Exception.Message))"
+    return 'unreachable'
+  }
+}
+
 # Part one of laptop_stop, before the handover: only waits for the board.
 function Wait-BoardExit {
   Set-Step 'laptop_stop' 'running' "board pid $BoardPid"
@@ -357,9 +385,16 @@ function Wait-BoardExit {
   }
   if ($b) {
     if (-not $b.WaitForExit($BoardWaitMs)) {
-      Write-Log "the board is still alive after $BoardWaitMs ms; Stop-Process -Force"
-      Stop-Process -Id $BoardPid -Force -ErrorAction SilentlyContinue
-      [void]$b.WaitForExit(10000)
+      Write-Log "the board is still alive after $BoardWaitMs ms; asking it to save before it is forced"
+      if ((Request-BoardFlush) -eq 'refused') {
+        # Closing it would lose what it holds in memory. The step after this one fails
+        # because the port stays busy, which is the right outcome: nothing is lost.
+        Write-Log "NOT stopping the board (pid $BoardPid): it could not save. Free the disk or the locked file and retry the update."
+      } else {
+        Write-Log 'Stop-Process -Force'
+        Stop-Process -Id $BoardPid -Force -ErrorAction SilentlyContinue
+        [void]$b.WaitForExit(10000)
+      }
     }
   }
 }

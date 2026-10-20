@@ -70,22 +70,24 @@ if (Test-Path -LiteralPath $pidFile) {
     # running, loudly, unless -IgnoreSaveFailure.
     # The port, as the board reads it: HFSMON_CONFIG (or config.json), then the
     # config.local.json beside it.
-    $boardPort = 7420
+    # Not named $boardPort: PowerShell variables are case-insensitive, so that would be
+    # the -BoardPort parameter itself and the value passed in would be overwritten.
+    $flushPort = 7420
     $cfgFile = $env:HFSMON_CONFIG
     if (-not $cfgFile) { $cfgFile = Join-Path $root 'config.json' }
     $localFile = [regex]::Replace($cfgFile, '\.json$', '.local.json')
     foreach ($f in @($cfgFile, $localFile)) {
       try {
         $cfg = [IO.File]::ReadAllText($f) | ConvertFrom-Json
-        if ($cfg.port) { $boardPort = [int]$cfg.port }
+        if ($cfg.port) { $flushPort = [int]$cfg.port }
       } catch { }
     }
-    if ($BoardPort -gt 0) { $boardPort = $BoardPort }
+    if ($BoardPort -gt 0) { $flushPort = $BoardPort }
     $saved = $false
     $refused = $false
     for ($try = 1; $try -le 2 -and -not $saved; $try++) {
       try {
-        $r = Invoke-WebRequest -UseBasicParsing -Method Post -TimeoutSec 20 -Uri "http://127.0.0.1:$boardPort/api/flush"
+        $r = Invoke-WebRequest -UseBasicParsing -Method Post -TimeoutSec 20 -Uri "http://127.0.0.1:$flushPort/api/flush"
         Write-Host "El tablero guardo sus datos (HTTP $($r.StatusCode))."
         $saved = $true
       } catch {
@@ -96,7 +98,8 @@ if (Test-Path -LiteralPath $pidFile) {
           # build without the route, 401/403) means no save was asked for: close as before.
           $refused = $true
           $detail = ''
-          try { $detail = $_.ErrorDetails.Message } catch { }
+          try { $detail = (New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())).ReadToEnd() } catch { }
+          if (-not $detail) { try { $detail = $_.ErrorDetails.Message } catch { } }
           Write-Host "!! EL TABLERO NO PUDO GUARDAR SUS DATOS (intento $try de 2): $detail"
           if ($try -lt 2) { Start-Sleep -Seconds 2 }
         } else {
@@ -122,6 +125,40 @@ if (Test-Path -LiteralPath $pidFile) {
 
 # Playwright's own webServers (boot.mjs -> hfs.exe) can outlive the tree kill and
 # keep holding their port. Only listeners inside the board's ranges are touched.
+#
+# It used to close ANY process listening in the range. Now a listener is closed only if it
+# is node or hfs AND its command line or program path is under the board's folder or under
+# the worktree root of one of its projects; anything else is listed and left alone.
+$ownDirs = New-Object System.Collections.Generic.List[string]
+$ownDirs.Add($root)
+$cfgFileForDirs = $env:HFSMON_CONFIG
+if (-not $cfgFileForDirs) { $cfgFileForDirs = Join-Path $root 'config.json' }
+foreach ($f in @($cfgFileForDirs, ([regex]::Replace($cfgFileForDirs, '\.json$', '.local.json')))) {
+  try {
+    $c = [IO.File]::ReadAllText($f) | ConvertFrom-Json
+    if ($c.project.worktreeRoot) { $ownDirs.Add([string]$c.project.worktreeRoot) }
+  } catch { }
+}
+foreach ($f in @((Join-Path $root 'server\data\projects.json'))) {
+  try {
+    foreach ($pr in ([IO.File]::ReadAllText($f) | ConvertFrom-Json)) {
+      if ($pr.worktreeRoot) { $ownDirs.Add([string]$pr.worktreeRoot) }
+    }
+  } catch { }
+}
+function Test-BoardOwned([int]$ownerPid) {
+  $info = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
+  if (-not $info) { return $false }
+  $imageName = [IO.Path]::GetFileNameWithoutExtension([string]$info.Name).ToLower()
+  if ($imageName -ne 'node' -and $imageName -ne 'hfs') { return $false }
+  $where = (([string]$info.CommandLine) + ' ' + ([string]$info.ExecutablePath)).Replace('/', '\').ToLower()
+  foreach ($d in $ownDirs) {
+    $dir = ([string]$d).Replace('/', '\').TrimEnd('\').ToLower()
+    if ($dir -and $where.Contains($dir)) { return $true }
+  }
+  return $false
+}
+
 Start-Sleep -Seconds 2
 $orphans = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
   Where-Object { $_.LocalPort -ge $PortFrom -and $_.LocalPort -le $PortTo } |
@@ -131,8 +168,12 @@ if ($orphans) {
   foreach ($orphanPid in $orphans) {
     $p = Get-Process -Id $orphanPid -ErrorAction SilentlyContinue
     if ($p) {
-      Write-Host ("  huerfano en los puertos del board: {0} (PID {1}) - cerrando" -f $p.ProcessName, $orphanPid)
-      Stop-Process -Id $orphanPid -Force -ErrorAction SilentlyContinue
+      if (Test-BoardOwned $orphanPid) {
+        Write-Host ("  huerfano en los puertos del board: {0} (PID {1}) - cerrando" -f $p.ProcessName, $orphanPid)
+        Stop-Process -Id $orphanPid -Force -ErrorAction SilentlyContinue
+      } else {
+        Write-Host ("  escucha en los puertos del board pero no es suyo (no es node/hfs de esta carpeta ni de sus worktrees): {0} (PID {1}) - NO se toca" -f $p.ProcessName, $orphanPid)
+      }
     }
   }
 } else {

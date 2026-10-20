@@ -143,7 +143,7 @@ function loadHeavy(f, key, holder) {
   const r = readHeavy(DATA_DIR, SCOPE, key);
   if (!r.ok) {
     const aside = r.reason === 'corrupt' ? quarantine(r.file) : null;
-    console.error(`[projectchats] ${f}: el chat ${key} está dividido pero ${r.file} está ${r.foreign ? 'a nombre de otro id (no se lee)' : r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); movido a ${aside}`}; arranca sin historial (la copia .pre-split.bak lo conserva)`);
+    console.error(`[projectchats] ${f}: el chat ${key} está dividido pero ${r.file} está ${r.foreign ? 'a nombre de otro id (no se lee)' : r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); ${aside ? `movido a ${aside}` : 'NO se pudo apartar'}`}; arranca sin historial (la copia .pre-split.bak lo conserva)`);
     delete holder[SPLIT_MARK];
     return;
   }
