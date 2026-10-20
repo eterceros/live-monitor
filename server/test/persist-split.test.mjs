@@ -1,13 +1,13 @@
 import './isolate.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, existsSync, readdirSync, cpSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, cpSync, rmSync, mkdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { tempDir } from './teardown.mjs';
-import { readTasksFileMerged, coreOf, heavyChunks, mergeHeavy, SPLIT_MARK } from '../src/splitfmt.js';
+import { readTasksFileMerged, coreOf, heavyChunks, mergeHeavy, SPLIT_MARK, heavyPath, readHeavy, backupOnce } from '../src/splitfmt.js';
 import { migrateChats, resetChatsOnBoot } from '../src/chats.js';
 
 /**
@@ -185,6 +185,7 @@ test('if the split cannot be written the old format keeps saving and the backup 
   const dir = legacyDir();
   writeFileSync(path.join(dir, 'taskdata'), 'in the way');     // a file where the folder must go
   const original = JSON.parse(readFileSync(path.join(dir, 'tasks.json'), 'utf8'));
+  const before = sha(path.join(dir, 'tasks.json'));
   const r = await child(dir, 'boot');
   assert.equal(r.code, 0, r.err);
   assert.match(r.err, /no se pudo migrar/);
@@ -192,6 +193,24 @@ test('if the split cannot be written the old format keeps saving and the backup 
   const saved = JSON.parse(readFileSync(path.join(dir, 'tasks.json'), 'utf8'));
   assert.deepEqual(saved[1].log, original[1].log, 'the single file still holds everything');
   assert.equal(saved[1][SPLIT_MARK], undefined);
+  // A migration that fails on every boot does not pile up a ~100 MB backup per boot.
+  for (let i = 0; i < 3; i++) assert.equal((await child(dir, 'boot')).code, 0);
+  const baks = readdirSync(dir).filter((n) => n.startsWith('tasks.json.pre-split'));
+  assert.ok(baks.length <= 2, `at most the original and its rewritten form, got ${baks.join(', ')}`);
+  assert.equal(sha(path.join(dir, 'tasks.json.pre-split.bak')), before, 'the first backup is still the original, byte for byte');
+});
+
+test('backupOnce reuses an identical backup and never overwrites a different one', () => {
+  const dir = tempDir('hfsmon-bak-');
+  const f = path.join(dir, 'x.json');
+  writeFileSync(f, '{"a":1}');
+  const first = backupOnce(f);
+  assert.equal(backupOnce(f), first, 'same bytes: no second copy');
+  assert.equal(readdirSync(dir).filter((n) => n.endsWith('.bak')).length, 1);
+  writeFileSync(f, '{"a":2}');
+  const second = backupOnce(f);
+  assert.notEqual(second, first);
+  assert.equal(readFileSync(first, 'utf8'), '{"a":1}', 'the first backup was not touched');
 });
 
 // The same comparison on a COPY of the real data, when the owner points at one.
@@ -259,4 +278,63 @@ test('REAL DATA COPY: migrating loses nothing (every task, log and chat, origina
   process.stderr.write(`[persist-split] fields the boot's own fix-ups changed: ${[...changedByBoot].sort().join(', ')}
 `);
   process.stderr.write(`[persist-split] real copy: ${summary.tasks} tasks, ${tasks} entries compared, ${logLines} log lines, ${messages} messages, ${summary.holders} holders: identical\n`);
+});
+
+test('going back to an older build and returning: what the old build wrote into the main file is united with the data file, nothing dropped', async () => {
+  const dir = legacyDir();
+  const original = JSON.parse(readFileSync(path.join(dir, 'tasks.json'), 'utf8'));
+  assert.equal((await child(dir, 'boot')).code, 0);                   // migrated
+  // An old build knows nothing of the split: it loads the main file (empty log and messages,
+  // marker kept as an unknown field), appends, and writes the whole thing back.
+  const main = JSON.parse(readFileSync(path.join(dir, 'tasks.json'), 'utf8'));
+  main[1].log.push({ ts: 'z', phase: 'viejo', line: 'escrita por un build antiguo' });
+  main[1].chats[0].messages.push({ id: 'old-msg', role: 'user', text: 'mensaje de un build antiguo', ts: 'z' });
+  assert.equal(main[1][SPLIT_MARK], 1);
+  writeFileSync(path.join(dir, 'tasks.json'), JSON.stringify(main, null, 2));
+  const r = await child(dir, 'dump', path.join(dir, '_dump'));
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /older build/);
+  const merged = readTasksFileMerged(path.join(dir, 'tasks.json'));
+  assert.deepEqual(merged[1].log.slice(0, original[1].log.length), original[1].log, 'the whole history first');
+  assert.ok(merged[1].log.some((e) => e.line === 'escrita por un build antiguo'), 'and what the old build wrote');
+  assert.ok(merged[1].log.some((e) => /older build/.test(e.line)), 'the task log says it happened');
+  const msgs = merged[1].chats[0].messages;
+  assert.deepEqual(msgs.slice(0, 10), original[1].chats[0].messages, 'the chat history first');
+  assert.equal(msgs.at(-1).id, 'old-msg');
+  assert.ok(readdirSync(path.join(dir, 'taskdata', 'tasks')).some((n) => n.startsWith('1.json.pre-merge')), 'the data file as it was is kept: ' + r.err);
+  // Once united the main file is split again: a further boot changes nothing.
+  const snapshot = sha(path.join(dir, 'tasks.json'));
+  assert.equal((await child(dir, 'boot')).code, 0);
+  assert.equal(sha(path.join(dir, 'tasks.json')), snapshot);
+  assert.deepEqual(readTasksFileMerged(path.join(dir, 'tasks.json'))[1].log, merged[1].log);
+});
+
+test('a data file with messages of a chat the main file does not list is reported and kept, not ignored', async () => {
+  const dir = legacyDir();
+  assert.equal((await child(dir, 'boot')).code, 0);
+  const sidecar = path.join(dir, 'taskdata', 'tasks', '1.json');
+  const heavy = JSON.parse(readFileSync(sidecar, 'utf8'));
+  heavy.messages.ghost = [{ id: 'g1', role: 'user', text: 'de un chat creado justo antes de un corte', ts: 'z' }];
+  writeFileSync(sidecar, JSON.stringify(heavy));
+  const r = await child(dir, 'boot');
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /does not list \(ghost\)/);
+  const bak = readdirSync(path.join(dir, 'taskdata', 'tasks')).find((n) => n.startsWith('1.json.orphan-chats'));
+  assert.ok(bak, 'a copy of the data file with those messages is kept');
+  assert.equal(JSON.parse(readFileSync(path.join(dir, 'taskdata', 'tasks', bak), 'utf8')).messages.ghost[0].id, 'g1');
+  assert.ok(readTasksFileMerged(path.join(dir, 'tasks.json'))[1].log.some((e) => /does not list/.test(e.line)));
+});
+
+test('sidecar names are case-proof: ids that differ only in case get different files, old names are still read', () => {
+  const dir = tempDir('hfsmon-case-');
+  const a = heavyPath(dir, 'projectchats', 'proj@PC');
+  const b = heavyPath(dir, 'projectchats', 'proj@pc');
+  assert.notEqual(a.toLowerCase(), b.toLowerCase(), 'would be one file on Windows otherwise');
+  assert.equal(path.basename(b), 'proj@pc.json', 'a lowercase id keeps the name it always had');
+  assert.equal(path.basename(heavyPath(dir, 'tasks', 1473)), '1473.json');
+  // A file written with the previous scheme (case kept) is found.
+  mkdirSync(path.join(dir, 'taskdata', 'projectchats'), { recursive: true });
+  writeFileSync(path.join(dir, 'taskdata', 'projectchats', 'Proj@PC.json'), '{"v":1,"log":[],"messages":{}}');
+  assert.equal(readHeavy(dir, 'projectchats', 'Proj@PC').ok, true);
+  assert.equal(readHeavy(dir, 'projectchats', 'Proj@PD').reason, 'missing');
 });

@@ -9,7 +9,9 @@ param(
   [int]$PortFrom = 18080,
   [int]$PortTo = 18900,
   # Skips the upgrade lock: upgrade.ps1 runs the port sweep while it holds it.
-  [switch]$Force
+  [switch]$Force,
+  # The port the board listens on; 0 reads config.json (7420 if it says nothing).
+  [int]$BoardPort = 0
 )
 
 $root = $PSScriptRoot
@@ -58,6 +60,21 @@ if (Test-Path -LiteralPath $pidFile) {
     }
   }
   if ($isBoard) {
+    # Ask the board to save first: taskkill /F skips every exit handler, and the
+    # store keeps the last few seconds of changes in memory. The call answers once
+    # the files are written; if it cannot be made the board is closed anyway.
+    $boardPort = 7420
+    try {
+      $cfg = [IO.File]::ReadAllText((Join-Path $root 'config.json')) | ConvertFrom-Json
+      if ($cfg.port) { $boardPort = [int]$cfg.port }
+    } catch { }
+    if ($BoardPort -gt 0) { $boardPort = $BoardPort }
+    try {
+      $r = Invoke-WebRequest -UseBasicParsing -Method Post -TimeoutSec 20 -Uri "http://127.0.0.1:$boardPort/api/flush"
+      Write-Host "El tablero guardo sus datos (HTTP $($r.StatusCode))."
+    } catch {
+      Write-Host "No se pudo pedir al tablero que guarde ($($_.Exception.Message)); se cierra igualmente."
+    }
     # /T also kills the claude / npm / playwright children of active phases
     taskkill /PID $procId /T /F | Out-Null
     Write-Host "hfs-monitor detenido (PID $procId)."

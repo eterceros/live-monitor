@@ -170,11 +170,11 @@ export function writeAtomicSync(file, chunks) {
       closeSync(fd);
     }
     // Windows can refuse a rename for a moment while a scanner holds the target.
+    // This is the way-out path (nothing can wait for it later): ~2 s of retries.
     for (let attempt = 0; ; attempt++) {
       try { renameSync(tmp, file); break; } catch (e) {
-        if (attempt >= 4 || !RETRYABLE.has(e.code)) throw e;
-        const until = Date.now() + 25 * (attempt + 1);
-        while (Date.now() < until) { /* brief spin: sync callers cannot await */ }
+        if (attempt >= 12 || !RETRYABLE.has(e.code)) throw e;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
       }
     }
   } catch (e) {

@@ -197,7 +197,7 @@ try {
     while ((Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) -and $w.Elapsed.TotalSeconds -lt 15) { Start-Sleep -Milliseconds 100 }
   }
 
-  $stopCode = Invoke-Script 'stop.ps1' @('-PortFrom', $PortFrom, '-PortTo', $PortTo) ($TimeoutSeconds + 60)
+  $stopCode = Invoke-Script 'stop.ps1' @('-PortFrom', $PortFrom, '-PortTo', $PortTo, '-BoardPort', $Port) ($TimeoutSeconds + 60)
   if ($stopCode -ne 0) { Finish $stopCode }
 
   # Starting before Windows releases the listener fails with EADDRINUSE, and the

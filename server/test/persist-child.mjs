@@ -25,6 +25,20 @@ if (mode === 'hammer') {
     for (let i = 0; i < 20; i++, n++) store.addLog(tasks[n % tasks.length], 'tool', `child ${n} `.repeat(8));
   }, 2);
   console.log('ready');
+} else if (mode === 'inflight') {
+  // A change, an async write that has just started, and then the orderly exit
+  // (what a signal or upgrade.js does): flush() with NOTHING new since the write began.
+  const t = Object.values(store.tasks)[0];
+  t.title = 'cambiado justo antes de salir';
+  store.addLog(t, 'estado', 'linea en vuelo');
+  store.addChat(t, null, 'user', 'mensaje en vuelo');
+  const holder = pc._loadedHoldersForTests()[0]?.[1];
+  if (holder) store.addLog(holder, 'estado', 'linea de holder en vuelo');
+  store.persist(t);
+  store.flushAsync();                    // takes the dirty lists, awaits the file
+  pc._flushProjectChatsAsyncForTests();
+  store.flush();                         // must write again what is in flight
+  process.exit(0);
 } else if (mode === 'boot') {
   // Boots (migrations run), writes everything, leaves.
   pc.migrateProjectChatsOnBoot();   // what index.js does before it listens

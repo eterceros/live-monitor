@@ -1,4 +1,5 @@
 import { readFileSync, existsSync, mkdirSync, copyFileSync, statSync, constants, renameSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { ChunkBuilder } from './persistcache.js';
 
@@ -33,8 +34,20 @@ function strippable(chat, chats) {
     && chats.filter((c) => isObj(c) && c.id === chat.id).length === 1;
 }
 
-/** The file name an id gets inside a scope's folder: no separators, no surprises. */
-const safeName = (id) => String(id).replace(/[^A-Za-z0-9._@-]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+/** The file name sidecars were first written with: no separators, no surprises, but case kept. */
+const safeNameLegacy = (id) => String(id).replace(/[^A-Za-z0-9._@-]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+
+/**
+ * The file name an id gets now. Windows folds case, so `proj@PC` and `proj@pc`
+ * would be one file: a name with capitals is written lowercase plus a hash of the
+ * original (`proj@pc~1a2b3c4d`), so two ids differing only in case stay apart.
+ * Names that are already lowercase are unchanged, so existing files keep their name.
+ */
+function safeName(id) {
+  const enc = safeNameLegacy(id);
+  const lower = enc.toLowerCase();
+  return enc === lower ? enc : `${lower}~${createHash('sha1').update(String(id)).digest('hex').slice(0, 8)}`;
+}
 
 /**
  * Where an entry's heavy part lives.
@@ -44,6 +57,9 @@ const safeName = (id) => String(id).replace(/[^A-Za-z0-9._@-]/g, (c) => `%${c.ch
  * @param {string|number} id the entry's key in that file.
  */
 export const heavyPath = (dataDir, scope, id) => path.join(dataDir, HEAVY_DIR, scope, `${safeName(id)}.json`);
+
+/** Where an id with capitals was written before names were made case-proof (read only). */
+const heavyPathLegacy = (dataDir, scope, id) => path.join(dataDir, HEAVY_DIR, scope, `${safeNameLegacy(id)}.json`);
 
 /** The main file's scope: `/x/tasks.ehr.json` → `tasks.ehr`. */
 export const scopeOf = (file) => path.basename(file).replace(/\.json$/, '');
@@ -99,35 +115,66 @@ export function* heavyItems(entry) {
   }
 }
 
+/** Everything of `base` (the sidecar: older) and then what only `extra` (the main file: newer) has. */
+function union(base, extra) {
+  const keyOf = (x) => (isObj(x) && x.id !== undefined ? `i:${x.id}` : `j:${JSON.stringify(x)}`);
+  const seen = new Set(base.map(keyOf));
+  return [...base, ...extra.filter((x) => !seen.has(keyOf(x)))];
+}
+
 /**
  * Puts a sidecar's content back into an entry read from the main file.
- * Returns what could not be placed (a chat the sidecar has no messages for).
+ *
+ * Normally the entry's `log` and its chats' `messages` are empty stubs and the
+ * sidecar fills them. If one is NOT empty, an older build (which does not know the
+ * split) has been writing into the main file after the conversion: the two are
+ * united, the sidecar's first, nothing dropped, and `merged` says so.
+ *
+ * @returns {{log: boolean, chats: string[], merged: boolean, orphans: string[]}}
+ *   `log`/`chats`: what the sidecar has nothing for; `merged`: a union was needed;
+ *   `orphans`: chats with messages in the sidecar that the main file does not list
+ *   (a cut between the two writes).
  */
 export function mergeHeavy(entry, heavy) {
-  const lost = { log: false, chats: [] };
-  if (Array.isArray(heavy?.log) && Array.isArray(entry.log)) entry.log = heavy.log;
-  else if (Array.isArray(entry.log) && entry.log.length === 0) lost.log = true;
-  for (const chat of Array.isArray(entry.chats) ? entry.chats : []) {
-    if (!isObj(chat) || !Array.isArray(chat.messages) || chat.messages.length) continue;
-    const m = heavy?.messages?.[chat.id];
-    if (Array.isArray(m)) chat.messages = m;
-    else if (typeof chat.id === 'string') lost.chats.push(chat.id);
+  const out = { log: false, chats: [], merged: false, orphans: [] };
+  if (Array.isArray(entry.log)) {
+    if (Array.isArray(heavy?.log)) {
+      if (entry.log.length === 0) entry.log = heavy.log;
+      else { entry.log = union(heavy.log, entry.log); out.merged = true; }
+    } else if (entry.log.length === 0) out.log = true;
+  }
+  const chats = Array.isArray(entry.chats) ? entry.chats : [];
+  for (const chat of chats) {
+    if (!isObj(chat) || !Array.isArray(chat.messages)) continue;
+    const m = isObj(heavy?.messages) && Object.hasOwn(heavy.messages, chat.id) ? heavy.messages[chat.id] : undefined;
+    if (Array.isArray(m)) {
+      if (chat.messages.length === 0) chat.messages = m;
+      else { chat.messages = union(m, chat.messages); out.merged = true; }
+    } else if (chat.messages.length === 0 && typeof chat.id === 'string') out.chats.push(chat.id);
+  }
+  if (isObj(heavy?.messages)) {
+    const known = new Set(chats.map((c) => (isObj(c) ? c.id : undefined)));
+    for (const [id, m] of Object.entries(heavy.messages)) if (!known.has(id) && Array.isArray(m) && m.length) out.orphans.push(id);
   }
   delete entry[SPLIT_MARK];
-  return lost;
+  return out;
 }
 
 /**
  * Reads an entry's sidecar.
- * @returns {{ok: true, heavy: object} | {ok: false, reason: 'missing'|'corrupt', file: string, error?: string}}
+ * @returns {{ok: true, heavy: object, file: string} | {ok: false, reason: 'missing'|'corrupt', file: string, error?: string}}
  */
 export function readHeavy(dataDir, scope, id) {
-  const file = heavyPath(dataDir, scope, id);
-  if (!existsSync(file)) return { ok: false, reason: 'missing', file };
+  let file = heavyPath(dataDir, scope, id);
+  if (!existsSync(file)) {
+    const old = heavyPathLegacy(dataDir, scope, id);   // written before names were case-proof
+    if (old !== file && existsSync(old)) file = old;
+    else return { ok: false, reason: 'missing', file };
+  }
   try {
     const heavy = JSON.parse(readFileSync(file, 'utf8'));
     if (!isObj(heavy)) throw new Error('not an object');
-    return { ok: true, heavy };
+    return { ok: true, heavy, file };
   } catch (e) {
     return { ok: false, reason: 'corrupt', file, error: e.message };
   }
@@ -144,12 +191,20 @@ export const ensureHeavyDir = (file) => mkdirSync(path.dirname(file), { recursiv
 
 /**
  * Copies `file` to `<file>.pre-split.bak` (`.1.bak`, `.2.bak`… if that exists):
- * a backup is never overwritten. Verifies the size. Returns the backup's path.
+ * a backup is never overwritten. An existing backup with exactly the same bytes is
+ * reused instead of making another (a migration that fails on every boot must not
+ * add ~100 MB each time). Verifies the size. Returns the backup's path.
  * Throws when it cannot make one — the caller then must not migrate.
  */
 export function backupOnce(file, suffix = 'pre-split') {
   for (let n = 0; ; n++) {
     const bak = `${file}.${suffix}${n ? `.${n}` : ''}.bak`;
+    if (existsSync(bak)) {
+      try {
+        if (statSync(bak).size === statSync(file).size && readFileSync(bak).equals(readFileSync(file))) return bak;
+      } catch { /* unreadable: treat it as different and move on */ }
+      continue;
+    }
     try {
       copyFileSync(file, bak, constants.COPYFILE_EXCL);
     } catch (e) {

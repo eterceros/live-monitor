@@ -38,7 +38,7 @@ import { hasCommits, isProjectWorktree, pendingWork } from './worktree.js';
 import { startStack, stopStack, publicStack } from './stack.js';
 import { saveAttachment, acceptedAttachments } from './attachments.js';
 import { validatePrompts } from './prompts.js';
-import { accessGuard, socketRefusal, describeAccess, listenHost } from './access.js';
+import { accessGuard, socketRefusal, describeAccess, listenHost, isDirectLoopback } from './access.js';
 import { chatsOf, chatById, isChatBusy, chatRunning } from './chats.js';
 import { planProgress } from './planexec.js';
 import { filesRouter } from './files.js';
@@ -81,6 +81,19 @@ const app = express();
 // The token first, the body after. The guard reads only headers, the cookie
 // and the query, so nobody without the token gets up to 25 MB parsed.
 app.use(accessGuard);
+// «Save everything now», for stop.ps1: it ends the board with taskkill /F, which
+// skips every exit handler, and the store keeps the last few seconds in memory.
+// Direct loopback only (never through a proxy), and before the upgrade guard: a
+// flush is exactly what an upgrade wants too. It answers when the files are written.
+app.post('/api/flush', (req, res) => {
+  if (!isDirectLoopback(req)) return res.status(403).json({ error: 'local only' });
+  try {
+    store.flush();
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
 // The file viewer: read-only, GET only, so it needs no body parser.
 app.use(filesRouter);
 // The folder browser for the project dialog: read-only, GET only, and it

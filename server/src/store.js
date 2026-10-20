@@ -153,6 +153,9 @@ class Store extends EventEmitter {
   #legacy = new Set();
   /** Projects whose migration failed: they keep being written in the old format. */
   #noSplit = new Set();
+  /** What the running async write took off the dirty lists and has not landed yet: a sync flush must write it again. */
+  #inflightProjects = new Set();
+  #inflightKeys = new Set();
   /** The first flush: sidecars equal to what is on disk are not rewritten. */
   #bootFlush = false;
   /** Length each array had when it was serialized (to notice a silent push/splice). */
@@ -316,6 +319,26 @@ class Store extends EventEmitter {
   }
 
   /**
+   * A sidecar that needed more than filling in: an older build wrote into the main
+   * file after the split (`merged`: the two were united), or the sidecar has
+   * messages of a chat the main file does not list (`orphans`: a cut between the
+   * two writes). Either way a copy of the sidecar as it was is kept (the next write
+   * replaces it) and the task's log says so, instead of ignoring it in silence.
+   */
+  #noteRecovery(task, label, sidecar, info) {
+    if (!info.merged && !info.orphans.length) return;
+    const suffix = info.orphans.length ? 'orphan-chats' : 'pre-merge';
+    let bak = null;
+    try { bak = backupOnce(sidecar, suffix); } catch (e) { bak = `(sin copia: ${e.message})`; }
+    const line = info.orphans.length
+      ? `Recovered data: the data file had messages of chats this task does not list (${info.orphans.join(', ')}); copy kept in ${bak}`
+      : `Recovered data: an older build had written into the main file after the split; both were united; copy of the data file kept in ${bak}`;
+    console.error(`[store] ${label}: ${line}`);
+    task.log ??= [];
+    task.log.push({ ts: new Date().toISOString(), phase: 'chat', line });
+  }
+
+  /**
    * Puts a split task's log and messages back from its sidecar. A sidecar that
    * is missing or unreadable is reported, never papered over: an unreadable one
    * is moved aside (so the next write cannot overwrite it) and the task starts
@@ -333,6 +356,7 @@ class Store extends EventEmitter {
     if (lost.log || lost.chats.length) {
       console.error(`[store] ${file}: la tarea ${fileKey} perdió en ${r.file}: ${lost.log ? 'el log ' : ''}${lost.chats.length ? `mensajes de ${lost.chats.join(', ')}` : ''}`);
     }
+    this.#noteRecovery(task, `${file} #${fileKey}`, r.file, lost);
   }
 
   /** Registers a project so that `flush` writes its file. */
@@ -538,6 +562,11 @@ class Store extends EventEmitter {
       this.#timer = null;
     }
     this.#adoptMoved(this.#revalidateAll(), true);
+    // A write in flight took its projects off the lists when it started; if the
+    // process leaves now (a signal, upgrade.js) it is cut off half-way. They are
+    // written again here; the sequence check then drops the older in-flight text.
+    for (const id of this.#inflightProjects) this.#dirty.add(id);
+    for (const k of this.#inflightKeys) this.#heavyDirty.add(k);
     if (!this.#dirty.size) return;
     const pending = [...this.#dirty];
     this.#dirty.clear();
@@ -582,6 +611,8 @@ class Store extends EventEmitter {
     this.#dirty.clear();
     const heavy = [...this.#heavyDirty];
     this.#heavyDirty.clear();
+    this.#inflightProjects = new Set(pending);
+    this.#inflightKeys = new Set(heavy);
     const done = new Set();
     try {
       for (const projectId of pending) {
@@ -619,6 +650,8 @@ class Store extends EventEmitter {
       }
     } finally {
       for (const k of heavy) if (!done.has(k)) this.#heavyDirty.add(k);
+      this.#inflightProjects = new Set();
+      this.#inflightKeys = new Set();
       this.#writing = false;
       // More changes arrived while writing (or a write failed): go again.
       if (this.#dirty.size && !this.#timer) this.#arm(PERSIST_DELAY_MS);

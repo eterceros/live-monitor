@@ -52,6 +52,9 @@ let dirty = false;
 let timer = null;
 let sweepTimer = null;
 let writing = false;
+/** What the running async write took off the dirty lists and has not landed yet: a sync flush must write it again. */
+let inflight = false;
+const inflightKeys = new Set();
 let seqStarted = 0;
 let seqLanded = 0;
 /** Text of each holder's entry in the main file (everything but log and messages). */
@@ -148,6 +151,19 @@ function loadHeavy(f, key, holder) {
   if (lost.log || lost.chats.length) {
     console.error(`[projectchats] ${f}: el chat ${key} perdió en ${r.file}: ${lost.log ? 'el log ' : ''}${lost.chats.length ? `mensajes de ${lost.chats.join(', ')}` : ''}`);
   }
+  if (lost.merged || lost.orphans.length) {
+    // An older build wrote into the main file after the split (both united), or the data
+    // file has messages of a chat the main file does not list (a cut between the writes).
+    // A copy of the data file as it was is kept (the next write replaces it) and the log says so.
+    let bak = null;
+    try { bak = backupOnce(r.file, lost.orphans.length ? 'orphan-chats' : 'pre-merge'); } catch (e) { bak = `(sin copia: ${e.message})`; }
+    const line = lost.orphans.length
+      ? `Recovered data: the data file had messages of chats this project chat does not list (${lost.orphans.join(', ')}); copy kept in ${bak}`
+      : `Recovered data: an older build had written into the main file after the split; both were united; copy of the data file kept in ${bak}`;
+    console.error(`[projectchats] ${f}: ${key}: ${line}`);
+    holder.log ??= [];
+    holder.log.push({ ts: new Date().toISOString(), phase: 'chat', line });
+  }
 }
 
 /**
@@ -178,6 +194,8 @@ export function _resetProjectChatsForTests() {
   coreSer = new SerCache(coreText);
   itemSer = new SerCache();
   heavyDirty.clear();
+  inflight = false;
+  inflightKeys.clear();
   legacy = false;
   noSplit = false;
   lens = new WeakMap();
@@ -363,6 +381,13 @@ export function flushProjectChats() {
     timer = null;
   }
   adoptMoved(revalidateAll());
+  // A write in flight took the dirty flags off when it started; if the process
+  // leaves now (a signal, upgrade.js) it is cut off half-way. Write it all again;
+  // the sequence check then drops the older in-flight text.
+  if (inflight) {
+    dirty = true;
+    for (const k of inflightKeys) heavyDirty.add(k);
+  }
   if (!dirty) return;
   dirty = false;
   const keys = [...heavyDirty];
@@ -384,6 +409,9 @@ async function flushProjectChatsAsync() {
   heavyDirty.clear();
   const wasDirty = dirty;
   dirty = false;
+  inflight = wasDirty;
+  inflightKeys.clear();
+  for (const k of keys) inflightKeys.add(k);
   try {
     if (!wasDirty) return;
     // The migration (once) and the old-format fallback go through the synchronous path.
@@ -407,6 +435,8 @@ async function flushProjectChatsAsync() {
     keys.forEach((k) => heavyDirty.add(k));
     console.error(`[projectchats] no se pudo guardar ${file()}: ${e.message}`);
   } finally {
+    inflight = false;
+    inflightKeys.clear();
     writing = false;
     if (dirty && !timer) arm();
   }

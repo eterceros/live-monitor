@@ -185,6 +185,18 @@ test('un flush síncrono durante una escritura asíncrona gana: el texto viejo n
   assert.deepEqual(onDisk(), inMemory());
 });
 
+test('salida ordenada con una escritura en vuelo y SIN cambios nuevos: flush() no da por escrito lo que va a medias', async () => {
+  const dir = tempDir('hfsmon-persist-inflight-');
+  cpSync(DATA_DIR, dir, { recursive: true });
+  const r = await runChild(dir, 'inflight');
+  assert.equal(r.code, 0);
+  const disk = readTasksFileMerged(path.join(dir, 'tasks.json'));
+  const first = Object.values(disk)[0];
+  assert.equal(first.title, 'cambiado justo antes de salir');
+  assert.equal(first.log.at(-1).line, 'linea en vuelo', 'the log line that was in flight is on disk');
+  assert.equal(first.chats[0].messages.at(-1).text, 'mensaje en vuelo', 'and so is the message');
+});
+
 test('writeChunksAtomic: un fallo o un descarte deja intacto el archivo y sin temporal', async () => {
   const f = path.join(tempDir('hfsmon-persist-aw-'), 'x.json');
   writeFileSync(f, '{"old":true}');

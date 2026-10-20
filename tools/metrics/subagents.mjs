@@ -16,8 +16,10 @@
  * directory or file.
  */
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import path from 'node:path';
+// Pure (only node:*): puts a task's log back when the board has split it into taskdata/.
+import { readTasksFileMerged } from '../../server/src/splitfmt.js';
 import { aggregate } from '../../server/src/metrics.js';
 
 const TASKS_FILE_RE = /^tasks(\.[a-z0-9][a-z0-9-]*)?\.json$/;
@@ -60,7 +62,7 @@ if (!files.length) die(`No tasks.json in ${dir}`);
 
 const load = (f) => {
   try {
-    const data = JSON.parse(readFileSync(path.join(dir, f), 'utf8'));
+    const data = readTasksFileMerged(path.join(dir, f));
     return (Array.isArray(data) ? data : Object.values(data ?? {})).filter((t) => t && typeof t === 'object' && Array.isArray(t.timings));
   } catch (e) {
     if (e instanceof SyntaxError) die(`${f} changed while reading (the board may be writing it): ${e.message}. Retry.`);
