@@ -257,7 +257,7 @@ test('un 500 es una máquina que está: una sola petición, sin reintento', asyn
   } finally { await srv.close(); }
 });
 
-test('escrituras y /exec no se reintentan nunca: un intento cada uno', async () => {
+test('las escrituras no se reintentan nunca: un intento', async () => {
   const conns = { n: 0 };
   const srv = await listening(null, (socket) => { conns.n += 1; socket.destroy(); });
   try {
@@ -265,12 +265,36 @@ test('escrituras y /exec no se reintentan nunca: un intento cada uno', async () 
     const write = await machineAt(srv.url).fs.writeFile('/tmp/x', 'hola').then(() => null, (e) => e);
     assert.equal(write?.code, 'RUNNER_OFFLINE');
     assert.equal(conns.n, 1, '/fs/write se intenta una sola vez');
+  } finally { await srv.close(); }
+});
 
+test('/exec con la conexión cortada antes de la primera respuesta se reintenta, y el comando corre una sola vez', async () => {
+  forgetRunnerHealth();
+  let toCut = 2;
+  let ran = 0;
+  const srv = await listening((_req, res) => {
+    ran += 1;
+    res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+    res.end(`${JSON.stringify({ line: 'ok' })}\n${JSON.stringify({ result: { ok: true, code: 0, stdout: 'ok', stderr: '' } })}\n`);
+  }, (socket) => { if (toCut > 0) { toCut -= 1; socket.destroy(); } });
+  const w = offlineWatcher();
+  try {
+    const r = await machineAt(srv.url).exec('git', ['status'], { cwd: '/tmp' });
+    assert.equal(r.ok, true, 'el tercer intento contesta y el llamante no se entera del corte');
+    assert.equal(toCut, 0, 'las dos primeras conexiones se cortaron de verdad');
+    assert.equal(ran, 1, 'el comando llegó a correr una sola vez');
+    assert.equal(w.seen.length, 0, 'un corte que se recupera no emite «offline»');
+  } finally { w.stop(); await srv.close(); }
+});
+
+test('/exec sin ninguna respuesta tras los tres intentos: RUNNER_OFFLINE y tres conexiones', async () => {
+  const conns = { n: 0 };
+  const srv = await listening(null, (socket) => { conns.n += 1; socket.destroy(); });
+  try {
     forgetRunnerHealth();
-    conns.n = 0;
     const exec = await machineAt(srv.url).exec('git', ['status'], { cwd: '/tmp' }).then(() => null, (e) => e);
     assert.equal(exec?.code, 'RUNNER_OFFLINE');
-    assert.equal(conns.n, 1, '/exec se intenta una sola vez');
+    assert.equal(conns.n, 3, '/exec se intenta tres veces como las lecturas');
   } finally { await srv.close(); }
 });
 
