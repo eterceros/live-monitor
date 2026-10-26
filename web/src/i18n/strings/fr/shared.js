@@ -11,6 +11,7 @@ export default {
     testing: { label: 'Tests en cours', hint: 'Playwright de bout en bout' },
     browser_qa: { label: 'QA navigateur', hint: 'comme un testeur, avec vidéo' },
     fix_gaps: { label: 'Fermeture des lacunes', hint: 'corrige ce qui manque avant la PR' },
+    resolving_conflicts: { label: 'Résolution des conflits', hint: 'intègre la branche de base dans celle de la PR et pousse' },
     pr_draft: { label: 'PR brouillon', hint: 'prête à relire' },
     ready: { label: "En attente d'approbation", hint: 'relecteur assigné' },
     waiting_approval: { label: "En attente d'approbation", hint: 'PR ouverte' },
@@ -106,6 +107,9 @@ export default {
     fullTestsOff: "Tests ciblés : seul ce que touche le diff s'exécute ; la CI fait le reste",
     fullTestsOn: 'La phase de tests exécute toute la suite du projet',
     fullTestsAuto: 'La portée des tests suit le tableau ({state})',
+    resolveConflictsOff: 'Les conflits avec la base sont pour vous',
+    resolveConflictsOn: "Si la PR entre en conflit avec sa base, le tableau l'intègre, teste ce que le conflit touche et pousse",
+    resolveConflictsAuto: 'La résolution des conflits suit le tableau ({state})',
   },
   metrics: {
     kind: { phase: 'phase', step: 'étape', session: 'session', wait: 'attente', chat: 'conversation', op: 'opération' },

@@ -10,6 +10,7 @@ export default {
     testing: { label: 'Running tests', hint: 'Playwright end to end' },
     browser_qa: { label: 'QA in the browser', hint: 'like a tester, with video' },
     fix_gaps: { label: 'Closing gaps', hint: 'fixes what is missing before the PR' },
+    resolving_conflicts: { label: 'Resolving conflicts', hint: 'merges the base branch into the PR branch and pushes' },
     pr_draft: { label: 'Draft PR', hint: 'ready for review' },
     ready: { label: 'Awaiting approval', hint: 'reviewer assigned' },
     waiting_approval: { label: 'Awaiting approval', hint: 'PR open' },
@@ -105,6 +106,9 @@ export default {
     fullTestsOff: 'Scoped tests: only what the diff touched runs; CI runs the rest',
     fullTestsOn: "The test phase runs the project's whole suite",
     fullTestsAuto: 'Test scope follows the board ({state})',
+    resolveConflictsOff: 'Conflicts with the base are left to you',
+    resolveConflictsOn: 'When the PR falls into a conflict with its base, the board merges it, tests what the conflict touched and pushes',
+    resolveConflictsAuto: 'Conflict resolution follows the board ({state})',
   },
   metrics: {
     kind: { phase: 'phase', step: 'step', session: 'session', wait: 'wait', chat: 'conversation', op: 'operation' },

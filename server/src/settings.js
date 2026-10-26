@@ -57,11 +57,12 @@ const OVERRIDABLE = {
   approvePlan: (value) => Boolean(value),
   fixGaps: (value) => Boolean(value),
   fullTests: (value) => Boolean(value),
+  resolveConflicts: (value) => Boolean(value),
   demo: (value) => Boolean(value),
 };
 
 /** A stable order to apply a project patch in, so a rejected patch fails the same way twice. */
-const OVERRIDE_ORDER = ['defaultMachine', 'pollIntervalMinutes', 'gitRefreshSeconds', 'autoStart', 'browserQa', 'approvePlan', 'fixGaps', 'fullTests', 'demo'];
+const OVERRIDE_ORDER = ['defaultMachine', 'pollIntervalMinutes', 'gitRefreshSeconds', 'autoStart', 'browserQa', 'approvePlan', 'fixGaps', 'fullTests', 'resolveConflicts', 'demo'];
 
 /** The session roles whose model and effort the board can override. */
 export const TUNING_ROLES = Object.freeze(['triage', 'advisor', 'plan', 'fix', 'pr', 'demo', 'reply', 'chat', 'qa', 'qaPlan']);
@@ -235,6 +236,10 @@ class Settings extends EventEmitter {
       // Whether the test phase runs the project's whole suite instead of only
       // what the diff touched. Off: the full suite is CI's job.
       fullTests: false,
+      // Whether a task waiting for review that falls into a conflict with its
+      // base is merged, verified and pushed by the board. On: it is the
+      // common case, and the switch is for the project that wants it off.
+      resolveConflicts: true,
       // Whether a finished run writes the demo steps; a task on `auto` follows it.
       demo: true,
       // The tabs over the chat panel: one per task, shared by every browser.
@@ -323,6 +328,7 @@ class Settings extends EventEmitter {
   get approvePlan() { return this.values.approvePlan === true; }
   get fixGaps() { return this.values.fixGaps === true; }
   get fullTests() { return this.values.fullTests === true; }
+  get resolveConflicts() { return this.values.resolveConflicts !== false; }
   get demo() { return this.values.demo !== false; }
 
   get maxActiveTasks() { return this.values.maxActiveTasks; }
@@ -371,6 +377,9 @@ class Settings extends EventEmitter {
 
   /** {@link Settings#fullTests} for one project. */
   fullTestsFor(id) { return this.valueFor(id, 'fullTests') === true; }
+
+  /** {@link Settings#resolveConflicts} for one project: on unless it says otherwise. */
+  resolveConflictsFor(id) { return this.valueFor(id, 'resolveConflicts') !== false; }
 
   /** {@link Settings#demo} for one project: on unless it says otherwise. */
   demoFor(id) { return this.valueFor(id, 'demo') !== false; }
@@ -459,6 +468,7 @@ class Settings extends EventEmitter {
     if (patch.approvePlan !== undefined) this.values.approvePlan = OVERRIDABLE.approvePlan(patch.approvePlan);
     if (patch.fixGaps !== undefined) this.values.fixGaps = OVERRIDABLE.fixGaps(patch.fixGaps);
     if (patch.fullTests !== undefined) this.values.fullTests = OVERRIDABLE.fullTests(patch.fullTests);
+    if (patch.resolveConflicts !== undefined) this.values.resolveConflicts = OVERRIDABLE.resolveConflicts(patch.resolveConflicts);
     if (patch.demo !== undefined) this.values.demo = OVERRIDABLE.demo(patch.demo);
     if (required) this.values.requiredPlugins = required;
     return this.#persist();

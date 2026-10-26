@@ -482,6 +482,46 @@ export async function analyzeMerge(machine, wtPath, mainSha) {
 }
 
 /**
+ * Whether a session's conflict resolution left the branch the way it was asked
+ * to: `mainSha` merged in, the work that was there kept, nothing half-done, no
+ * conflict marker left in the files that conflicted. Read-only.
+ *
+ * `{ ok, problems }`: every problem is a sentence, so the log and the card can
+ * say what was wrong without the reader opening the worktree.
+ */
+export async function verifyMergeResolution(machine, wtPath, { headBefore, mainSha, files = [] }) {
+  const problems = [];
+  if (await mergeInProgress(machine, wtPath)) problems.push('the merge was left half-done (MERGE_HEAD is still there)');
+  const status = await machine.exec('git', [RO, '-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=no'], { cwd: wtPath });
+  if (status.ok && status.stdout.trim()) problems.push(`tracked files were left uncommitted: ${status.stdout.trim().split('\n').slice(0, 3).join('; ')}`);
+  const head = await resolveRef(machine, wtPath, 'HEAD');
+  if (!head || head === headBefore) problems.push('the session made no merge commit');
+  else {
+    const hasMain = await machine.exec('git', [RO, 'merge-base', '--is-ancestor', mainSha, 'HEAD'], { cwd: wtPath });
+    if (!hasMain.ok) problems.push('origin/<base> is not part of the branch after the resolution');
+    const keeps = await machine.exec('git', [RO, 'merge-base', '--is-ancestor', headBefore, 'HEAD'], { cwd: wtPath });
+    if (!keeps.ok) problems.push('the branch lost the commits it had before the resolution');
+  }
+  if (files.length) {
+    const marks = await machine.exec('git', [RO, 'grep', '-n', '-E', '^(<<<<<<<|>>>>>>>) ', 'HEAD', '--', ...files], { cwd: wtPath });
+    // Exit 0 means a match; 1 means none; anything else is git failing, which is not a verdict.
+    if (marks.code === 0) problems.push(`conflict markers are still in: ${marks.stdout.trim().split('\n').slice(0, 3).join('; ')}`);
+  }
+  return { ok: problems.length === 0, problems };
+}
+
+/**
+ * Puts the branch back exactly where it was before a resolution that did not
+ * pass its checks: the half-done merge is aborted, then the branch returns to
+ * `headBefore`. Safe because nothing of the attempt was pushed.
+ */
+export async function rollbackMergeAttempt(machine, wtPath, headBefore) {
+  if (await mergeInProgress(machine, wtPath)) await machine.exec('git', [RO, 'merge', '--abort'], { cwd: wtPath });
+  const r = await machine.exec('git', [RO, 'reset', '--hard', headBefore], { cwd: wtPath });
+  return r.ok;
+}
+
+/**
  * What in the worktree would make a real merge unsafe.
  *
  * The dirt that matters here is the opposite of the one `pendingWork` reports:

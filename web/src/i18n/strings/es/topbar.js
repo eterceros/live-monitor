@@ -132,6 +132,10 @@ export default {
         name: 'Suite completa',
         title: 'La fase de tests corre toda la suite en vez de solo lo que toca el diff. Apagada de serie: el resto lo corre CI. Cada tarjeta puede cambiarlo',
       },
+      resolveConflicts: {
+        name: 'Resolver conflictos solo',
+        title: 'Un PR esperando revisión que cae en conflicto con su base lo integra, prueba donde cambió y sube el tablero. Nunca durante una fase. Cada tarjeta puede cambiarlo',
+      },
       demo: {
         title: 'La fase Demo genera los pasos para probar el cambio al terminar el run. Apagada aquí, las tareas de este proyecto en «auto» no la generan; cada tarjeta puede cambiarlo',
       },

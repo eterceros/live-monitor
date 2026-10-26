@@ -72,6 +72,7 @@ export const PARALLEL_SCOPE = {
   'plan-revise': 'core',
   fix: 'edit',
   'fix-gaps': 'core',
+  'resolve-conflicts': 'edit',
   'pr-body': 'core',
   demo: 'core',
   'change-request': 'core',

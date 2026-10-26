@@ -181,7 +181,7 @@ test('every session the pipeline starts carries the gate', async () => {
   // wrapper.
   const calls = [...src.matchAll(/\b(?:fixHooks\.)?runClaude\(\{|\brun\(\{|\bnudgedSession\(task,\s*'[^']+',\s*\{/g)];
   // Pinned: a new session site must be added here on purpose, after checking it.
-  assert.equal(calls.length, 21, `found ${calls.length} session literals`);
+  assert.equal(calls.length, 22, `found ${calls.length} session literals`);
 
   const ungated = [];
   for (const m of calls) {

@@ -39,6 +39,7 @@ export const STATES = [
   'triage',            // Opus triage (+ advisor when complex)
   'fixing',            // Opus implementing the fix
   'testing',           // Playwright e2e
+  'resolving_conflicts', // an idle PR's branch being merged with its base by a session
   'pr_draft',          // draft PR open
   'ready',             // PR marked ready, reviewer assigned
   'waiting_approval',  // an open PR is waiting for review/approval
@@ -164,6 +165,13 @@ class Store extends EventEmitter {
       if (t.prewarm && !t.prewarm.endedAt) {
         t.prewarm.ok = null;
         t.prewarm.endedAt = new Date().toISOString();
+      }
+      // A conflict resolution the restart cut: the branch is back to what it
+      // was (the next poll re-measures it), and the task returns to the state
+      // it rested in. Not an error: nothing the person asked for was lost.
+      if (t.state === 'resolving_conflicts') {
+        t.state = t.conflictRun?.from ?? 'pr_draft';
+        if (t.conflictRun) t.conflictRun = { ...t.conflictRun, status: 'interrupted', reason: 'the board restarted during the resolution' };
       }
       if (['worktree', 'triage', 'fixing', 'testing', 'browser_qa', 'fix_gaps'].includes(t.state)) {
         t.prevState = t.state;
@@ -465,6 +473,10 @@ class Store extends EventEmitter {
       // Born from the project's value, off unless it says otherwise: the test
       // phase runs only what the diff touched, `on` runs the whole suite.
       fullTests: settings.fullTestsFor(projectId) ? 'on' : 'off',
+      // Born from the project's value; `auto` (older tasks) follows it live.
+      resolveConflicts: settings.resolveConflictsFor(projectId) ? 'on' : 'off',
+      // What the last conflict resolution did, per origin/<base> it met.
+      conflictRun: null,
       qa: null,
       qaBusy: false,
       stack: null,

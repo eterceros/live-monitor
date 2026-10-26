@@ -24,6 +24,7 @@ export const STATUS = {
   testing: state('flask', 'busy', 'testing'),
   browser_qa: state('compass', 'busy', 'browser_qa'),
   fix_gaps: state('bandage', 'busy', 'fix_gaps'),
+  resolving_conflicts: state('branch', 'busy', 'resolving_conflicts'),
   pr_draft: state('note', 'ok', 'pr_draft'),
   ready: state('eye', 'ok', 'ready'),
   waiting_approval: state('eye', 'ok', 'waiting_approval'),
@@ -35,7 +36,7 @@ export const STATUS = {
   error: state('x-circle', 'error', 'error', false),
 };
 
-export const BUSY_STATES = ['worktree', 'triage', 'fixing', 'testing', 'browser_qa', 'fix_gaps'];
+export const BUSY_STATES = ['worktree', 'triage', 'fixing', 'testing', 'browser_qa', 'fix_gaps', 'resolving_conflicts'];
 
 /**
  * Columns of the board, in flow order, each naming the states it holds — every
@@ -54,6 +55,7 @@ export const COLUMNS = [
   { key: 'testing', states: ['testing'] },
   { key: 'browser_qa', states: ['browser_qa'] },
   { key: 'fix_gaps', states: ['fix_gaps'] },
+  { key: 'resolving_conflicts', states: ['resolving_conflicts'] },
   { key: 'pr_draft', states: ['pr_draft'] },
   { key: 'waiting_approval', states: ['waiting_approval', 'ready'] },
   { key: 'error', states: ['error'] },
@@ -64,7 +66,7 @@ export const COLUMNS = [
  * mapping and labels) but the feature is off by default, so an always-empty
  * «Cerrando huecos» column would just be noise.
  */
-export const HIDE_WHEN_EMPTY = ['error', 'started', 'fix_gaps'];
+export const HIDE_WHEN_EMPTY = ['error', 'started', 'fix_gaps', 'resolving_conflicts'];
 
 /**
  * Who drives a task. Not a state: a manual task keeps its real place in the

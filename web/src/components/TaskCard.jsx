@@ -155,7 +155,7 @@ export default function TaskCard({
   onCreateWorktree, onStartStack, onStopStack, onStart, onToggleManual,
   onOpenCr, onToggleActiveCr, onDraftCr, onStartCr, onSetMode, onMergeMain, onPush, onMergeHelp,
   machines = [], onSetMachine, onQa, onSetBrowserQa, onSetDemo, onAcceptFix, onPublishPr, onCloseIssue,
-  onAnswer, onReviewPlan, onSetApprovePlan, onSetFixGaps, onSetFullTests, onSetDesign,
+  onAnswer, onReviewPlan, onSetApprovePlan, onSetFixGaps, onSetFullTests, onSetResolveConflicts, onSetDesign,
   onMove, onRetryMove, onDiscardMove, onDeletePlace,
   quota = null, quotaNow = null, onRenewLogin = null, onOpenSettings = null,
 }) {
@@ -402,7 +402,7 @@ export default function TaskCard({
     onChat, onDemo, onLog, onTimeline, onReady, onReviewer, onRetry, onDeleteWorktree, onCreateWorktree,
     onStartStack, onStopStack, onStart, onToggleManual, onOpenCr, onToggleActiveCr, onDraftCr, onStartCr, onSetMode,
     onMergeMain, onPush, onMergeHelp, machines, onSetMachine, onQa, onSetBrowserQa, onSetDemo, onAcceptFix, onPublishPr,
-    onCloseIssue, onAnswer, onReviewPlan, onSetApprovePlan, onSetFixGaps, onSetFullTests, onSetDesign, onMove, onRetryMove,
+    onCloseIssue, onAnswer, onReviewPlan, onSetApprovePlan, onSetFixGaps, onSetFullTests, onSetResolveConflicts, onSetDesign, onMove, onRetryMove,
     onDiscardMove, onDeletePlace, onRenewLogin, onOpenSettings,
   };
 

@@ -95,6 +95,7 @@ export default {
     openSettings: 'Einstellungen öffnen',
     gaps: 'Lücken',
     fullTests: 'Volle Tests',
+    resolveConflicts: 'Konflikte',
     manual: 'Manuell',
     sourceManual: 'manuell',
     sourceAuto: 'automatisch',

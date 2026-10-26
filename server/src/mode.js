@@ -192,6 +192,9 @@ export function migrateTask(task) {
   if (!['auto', 'on', 'off'].includes(task.fixGaps)) task.fixGaps = 'auto';
   // Full suite in the test phase: older tasks never had it, so they stay scoped.
   if (!['auto', 'on', 'off'].includes(task.fullTests)) task.fullTests = 'off';
+  // Resolving conflicts on its own arrived later: older tasks follow the project.
+  if (!['auto', 'on', 'off'].includes(task.resolveConflicts)) task.resolveConflicts = 'auto';
+  if (task.conflictRun === undefined) task.conflictRun = null;
   // Design mark: a person's switch, off unless it is exactly true.
   if (task.design !== true) task.design = false;
   // A question a pipeline session asked, or a plan waiting for approval.

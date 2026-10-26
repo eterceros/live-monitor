@@ -27,7 +27,7 @@ import { withNudge } from './nudge.js';
 import {
   deriveBranchName, createWorktree, hasCommits, pushBranch, findBranchesForIssue, listAllBranches,
   isProjectWorktree, pendingWork, analyzeMerge, mergeBlockers, mergeMain, mergeInProgress, resolveRef,
-  statusPaths, worktreePathFor, commitSubject, deleteLocalBranch,
+  statusPaths, worktreePathFor, commitSubject, deleteLocalBranch, verifyMergeResolution, rollbackMergeAttempt,
   RepoStateError, classifyRepoState, isSafeBranchName,
 } from './worktree.js';
 import {
@@ -50,6 +50,7 @@ import { COLLECT_RULE } from './parallel.js';
 import { ghPublishProblems, ghGateMessage, callsGh, stateChangeProblem } from './ghgate.js';
 import { PHASE_LABEL, normalizePhase, planOfRun } from './phases.js';
 import { hasScopes, planScopes, describePlan } from './testscope.js';
+import { IDLE_PR_STATES, decide as decideConflict, pickToStart, maxParallelOf, maxAttemptsOf, unsafeConflicts } from './conflicts.js';
 import { choosePrTitle, prTypeFor, PR_TITLE_MAX } from './prtitle.js';
 import { canAutoStart, modeOf, resumeStateFor, keepsForced, newestFirst, SETTABLE_MODES } from './mode.js';
 import {
@@ -99,7 +100,7 @@ import { GAPS_TAG, gapsContract, readGaps, gapsToFixBrief, chatSummary, shouldIt
 const LEGACY_CONFIRM_LABEL = 'Sí, publicar';
 const isConfirmAnswer = (answer) => answer === CONFIRM_LABEL || answer === LEGACY_CONFIRM_LABEL;
 
-const ACTIVE_STATES = ['worktree', 'triage', 'fixing', 'testing', 'browser_qa', 'fix_gaps'];
+const ACTIVE_STATES = ['worktree', 'triage', 'fixing', 'testing', 'browser_qa', 'fix_gaps', 'resolving_conflicts'];
 
 /**
  * The configuration **this task's project** runs under: the global `config`
@@ -248,7 +249,8 @@ export function unassignedReason(task) {
 }
 
 export function activeCount() {
-  return store.all().filter((t) => ACTIVE_STATES.includes(t.state) || running.has(keyOf(t))).length;
+  // A conflict resolution has its own per-project queue (`conflictTick`): it does not take a slot from the tasks waiting to start.
+  return store.all().filter((t) => t.state !== 'resolving_conflicts' && (ACTIVE_STATES.includes(t.state) || running.has(keyOf(t)))).length;
 }
 
 /** Starts pipelines for queued tasks while there are free slots (limit set from the dashboard). */
@@ -294,6 +296,8 @@ export function tick() {
     if (activeCount() >= settings.maxActiveTasks) break;
     if (canAutoStart(task) && activeChangeRequest(task)?.status === 'pending' && !movingReason(task) && !task.unassigned) startChangeRequest(keyOf(task));
   }
+
+  conflictTick();
 }
 
 // Raising the limit (or re-enabling auto-start) from the dashboard releases
@@ -1987,6 +1991,246 @@ export async function askMergeHelp(issue) {
   return { asked: true, conflicts: verdict.conflicts };
 }
 
+// --- Resolving conflicts on its own -------------------------------------------
+//
+// A task whose PR waits for review drifts into a conflict with its base. While
+// it is idle (`IDLE_PR_STATES`: nothing is running on it) the board merges the
+// base with the fix's own session, verifies what the session left, runs the
+// tests the conflict touched, and pushes — so the card can be moved without
+// first resolving anything by hand. Never during a phase: a push in the middle
+// of a test run would throw that run away. The decisions are in conflicts.js.
+
+/** Whether the board resolves this task's conflicts by itself. */
+export function resolveConflictsWanted(task) {
+  if (task.resolveConflicts === 'on') return true;
+  if (task.resolveConflicts === 'off') return false;
+  return settings.resolveConflictsFor(task.project);
+}
+
+export function setResolveConflicts(issue, mode) {
+  assertNoUpgradeRunning();
+  const task = store.get(issue);
+  if (!task) throw new Error(`Unknown task #${issue}`);
+  if (!['auto', 'on', 'off'].includes(mode)) throw new Error('mode must be auto, on or off');
+  task.resolveConflicts = mode;
+  store.addLog(task, 'merge', `resolve conflicts by itself: ${mode === 'auto' ? `per the board (${settings.resolveConflictsFor(task.project) ? 'yes' : 'no'})` : mode === 'on' ? 'yes' : 'no'}`);
+  store.touch(task);
+  conflictTickSoon();
+  return mode;
+}
+
+/** Seams for tests: the session, the suite, git and the push, without a worktree. */
+export const conflictHooks = {
+  runClaude: (o) => fixHooks.runClaude(o),
+  testPhase: (...args) => testPhase(...args),
+  headCommit: (...args) => headCommit(...args),
+  isProjectWorktree: (...args) => isProjectWorktree(...args),
+  resolveRef: (...args) => resolveRef(...args),
+  analyzeMerge: (...args) => analyzeMerge(...args),
+  mergeBlockers: (...args) => mergeBlockers(...args),
+  verify: (...args) => verifyMergeResolution(...args),
+  rollback: (...args) => rollbackMergeAttempt(...args),
+  push: (task, machine, cwd) => withInfraRetries(task, 'merge', 'the push', () => pushBranch(machine, cwd, task.branch, { onLine: (l) => store.addLog(task, 'merge', l) })),
+  getIssue: (issue, project) => getIssue(issue, project),
+};
+
+let conflictTickQueued = false;
+/** One `conflictTick` after the current burst of branch measurements. */
+function conflictTickSoon() {
+  if (conflictTickQueued) return;
+  conflictTickQueued = true;
+  setTimeout(() => {
+    conflictTickQueued = false;
+    try { conflictTick(); } catch (e) { console.error(`[conflicts] ${reasonOf(e)}`); }
+  }, 50);
+}
+
+/**
+ * Looks at every idle PR with a conflict and starts the resolutions the
+ * per-project limit allows, oldest first; the rest wait their turn and the
+ * next call (a resolution ending, a poll) picks them up.
+ */
+export function conflictTick() {
+  if (process.env.HFSMON_NO_AUTOSTART === '1') return;
+  if (upgradeHoldsNewWork() || quotaHoldsNewWork()) return;
+  const inFlight = new Map();
+  const candidates = [];
+  for (const task of store.all()) {
+    if (task.state === 'resolving_conflicts') {
+      inFlight.set(task.project, (inFlight.get(task.project) ?? 0) + 1);
+      continue;
+    }
+    if (!IDLE_PR_STATES.includes(task.state) || !(task.branchStatus?.conflicts > 0) || task.unassigned) continue;
+    const verdict = decideConflict(task, {
+      wanted: resolveConflictsWanted(task),
+      canAuto: canAutoStart(task),
+      held: Boolean(movingReason(task)),
+      busy: Boolean(gitBusyReason(task)),
+      dirty: task.branchStatus.dirty > 0,
+      mainSha: task.branchStatus.mainSha ?? null,
+      files: task.branchStatus.conflictFiles ?? [],
+      limits: cfgOf(task).limits,
+    });
+    if (verdict.act === 'skip') noteConflictSkipped(task, verdict);
+    else if (verdict.act === 'resolve') candidates.push(task);
+  }
+  const limit = (project) => maxParallelOf(configFor(project)?.limits);
+  const byProject = new Map();
+  for (const task of candidates) byProject.set(task.project, [...(byProject.get(task.project) ?? []), task]);
+  for (const [project, tasks] of byProject) {
+    for (const task of pickToStart(tasks, inFlight, limit(project))) startConflictResolution(task);
+  }
+}
+
+/** Says once per `origin/<base>` why a conflict is left to a person. */
+function noteConflictSkipped(task, { reason, say }) {
+  if (!say) return;
+  const prev = task.conflictRun;
+  const mainSha = task.branchStatus?.mainSha ?? null;
+  task.conflictRun = { ...(prev?.mainSha === mainSha ? prev : {}), status: 'skipped', mainSha, reason, said: true, at: new Date().toISOString() };
+  store.addLog(task, 'merge', `⚠️ the conflict with origin/${baseOf(task)} is left to you: ${reason}`);
+  store.addChat(task, null, 'assistant', `⚠️ **The conflict with origin/${baseOf(task)} is left to you.** ${reason}.`);
+  store.touch(task);
+}
+
+/** Claims the task and runs the resolution in the background. */
+function startConflictResolution(task) {
+  const key = keyOf(task);
+  if (running.has(key)) return false;
+  const from = task.state;
+  const mainSha = task.branchStatus?.mainSha ?? null;
+  const prev = task.conflictRun?.mainSha === mainSha ? task.conflictRun : null;
+  task.conflictRun = {
+    status: 'resolving', from, mainSha, attempts: (prev?.attempts ?? 0) + 1, reason: null,
+    startedAt: new Date().toISOString(), said: false,
+  };
+  running.add(key);
+  store.setState(task, 'resolving_conflicts');
+  Promise.resolve()
+    .then(() => runConflictResolution(task))
+    .catch((e) => {
+      const quota = e instanceof QuotaExhausted;
+      task.conflictRun = {
+        ...task.conflictRun,
+        status: quota ? 'waiting_quota' : 'needs_attention',
+        reason: quota ? 'the account quota ran out' : reasonOf(e),
+        // A quota stop is not an attempt: it tries again when the window reopens.
+        attempts: quota ? Math.max(0, (task.conflictRun?.attempts ?? 1) - 1) : task.conflictRun?.attempts,
+        said: true,
+      };
+      store.addLog(task, 'merge', quota
+        ? `⏳ quota exhausted: the conflict resolution resumes on its own ${describeResume(quotaHold())}`
+        : `⚠️ the conflict with origin/${baseOf(task)} was not resolved: ${reasonOf(e)}`);
+      if (!quota) {
+        store.addChat(task, null, 'assistant', `⚠️ **I could not resolve the conflict with origin/${baseOf(task)}.** ${reasonOf(e)}\n\nThe branch is as it was; resolve it by hand or ask me here.`);
+      }
+      store.touch(task);
+    })
+    .finally(() => {
+      running.delete(key);
+      if (task.state === 'resolving_conflicts') store.setState(task, task.conflictRun?.from ?? 'pr_draft');
+      store.touch(task);
+      refreshBranchStatus(task, { force: true }).catch(() => {});
+      tick();
+    });
+  return true;
+}
+
+/**
+ * The resolution itself. Throws when it could not finish; the caller records
+ * why and puts the task back where it rested. Everything it did to the branch
+ * is undone first (`rollbackMergeAttempt`), so a failure leaves the branch as it was.
+ */
+async function runConflictResolution(task) {
+  const machine = machineOf(task);
+  const cwd = task.worktreePath;
+  const run = task.conflictRun;
+  const base = baseOf(task);
+  const say = (md) => store.addChat(task, null, 'assistant', md);
+
+  if (!(await conflictHooks.isProjectWorktree(machine, cwd))) throw new Error('this task has no valid worktree');
+  const mainSha = await conflictHooks.resolveRef(machine, cwd, `origin/${base}`);
+  if (!mainSha) throw new Error(`could not read origin/${base}`);
+  const verdict = await conflictHooks.analyzeMerge(machine, cwd, mainSha);
+  if (verdict.clean) {
+    store.addLog(task, 'merge', `the conflict is gone: origin/${base} merges cleanly`);
+    task.conflictRun = { ...run, status: 'gone', mainSha, said: true };
+    return;
+  }
+  const unsafe = unsafeConflicts(verdict.conflicts);
+  if (unsafe.length) throw new Error(`the conflict touches files that need a person: ${unsafe.slice(0, 3).join(', ')}`);
+  const blockers = await conflictHooks.mergeBlockers(machine, cwd, mainSha);
+  if (blockers.blocked) throw new Error('there is uncommitted work in the worktree that the merge would overwrite');
+  if (quotaHoldsNewWork(task)) throw new QuotaExhausted('merge');
+  if (!canAutoStart(task)) throw new Error('the task is manual');
+
+  const issue = await conflictHooks.getIssue(task.issue, task.project);
+  const cfg = cfgOf(task);
+  const headBefore = await conflictHooks.headCommit(machine, cwd);
+  run.mainSha = mainSha;
+  store.addLog(task, 'merge', `resolving the conflict with origin/${base} (${verdict.behind} commit(s) behind): ${verdict.conflicts.length} file(s) — attempt ${run.attempts} of ${maxAttemptsOf(cfg.limits)}`);
+  store.touch(task);
+
+  try {
+    const tune = tunedSession(task, 'fix', { stage: 'merge', cfg });
+    const onEvent = claudeLogger(task, 'merge');
+    releasePrincipal(task);
+    const principalSession = principalChat(task)?.sessionId ?? null;
+    // A session that writes to the tree: asked once, never nudged to ask again.
+    const session = await conflictHooks.runClaude({
+      machine,
+      cwd,
+      ...tune,
+      ...(principalSession ? { resume: principalSession } : {}),
+      maxTurns: 40,
+      onEvent,
+      // Nobody answers in this phase: a question would park the task for good.
+      canUseTool: async (name) => (name === 'AskUserQuestion'
+        ? { behavior: 'deny', message: 'Nadie responde en esta fase: decide tú y sigue, o aborta el merge y explícalo.' }
+        : { behavior: 'allow' }),
+      hooks: ghGateHooks(task, 'merge'),
+      prompt: renderPrompt('resolve-conflicts', {
+        ...promptVarsFor(task, 'merge'),
+        issueNumber: issue.number,
+        issueTitle: issue.title,
+        branch: task.branch,
+        baseBranch: base,
+        behind: verdict.behind,
+        conflictCount: verdict.conflicts.length,
+        conflictFiles: verdict.conflicts.map((f) => `- \`${f}\``).join('\n'),
+        processRule: processRuleFor(machine),
+        shellRule: shellRuleFor(machine),
+      }),
+    });
+    if (session.quota) throw new QuotaExhausted('merge');
+    if (session.sessionId && principalChat(task)) principalChat(task).sessionId = session.sessionId;
+    store.touch(task);
+
+    const check = await conflictHooks.verify(machine, cwd, { headBefore, mainSha, files: verdict.conflicts });
+    if (!check.ok) throw new Error(`the resolution did not pass its checks: ${check.problems.join('; ')}`);
+
+    // The fix is still done, and the tests that passed ran on code that had not
+    // met the base: the suite is needed again, only for what the diff touches.
+    const headAfter = await conflictHooks.headCommit(machine, cwd);
+    if (task.fixedAt && task.fixedAt === headBefore) task.fixedAt = headAfter;
+    task.e2ePassedAt = null;
+    await conflictHooks.testPhase(task);
+    task.e2ePassedAt = await conflictHooks.headCommit(machine, cwd);
+
+    await gitMutex.runExclusive(cwd, () => conflictHooks.push(task, machine, cwd));
+  } catch (e) {
+    // Nothing of this attempt was pushed: put the branch back as it was.
+    const restored = await conflictHooks.rollback(machine, cwd, headBefore).catch(() => false);
+    if (!restored) store.addLog(task, 'merge', `⚠️ could not put the branch back at ${String(headBefore).slice(0, 8)}: check the worktree`);
+    throw e;
+  }
+
+  task.conflictRun = { ...run, status: 'resolved', said: true, resolvedAt: new Date().toISOString(), reason: null };
+  store.addLog(task, 'merge', `origin/${base} merged and pushed (${verdict.conflicts.length} conflicting file(s)); the tests the conflict touched passed`);
+  say(`✅ **Resolved the conflict with origin/${base} and pushed.**\n\n${verdict.conflicts.map((f) => `- \`${f}\``).join('\n')}\n\nThe tests that cover what changed passed before the push; the full suite runs on GitHub.`);
+  store.touch(task);
+}
+
 export async function pushNow(issue) {
   assertNoUpgradeRunning();
   const task = store.get(issue);
@@ -2116,7 +2360,16 @@ export const BRANCH_AT_TOUCH_MS = 30 * 1000;
  * worst a moving target costs is a number one check stale. A task that is
  * moving between machines is still skipped.
  */
-export async function refreshBranchStatus(task, { includeBusy = false, force = false } = {}) {
+export async function refreshBranchStatus(task, options = {}) {
+  try {
+    await measureBranchStatus(task, options);
+  } finally {
+    // A conflict that just appeared is looked at right away, not at the next poll.
+    conflictTickSoon();
+  }
+}
+
+async function measureBranchStatus(task, { includeBusy = false, force = false } = {}) {
   if (task.moving) return;
   // Finished work does not move: keep whatever was measured last.
   if (task.state === 'done' && !includeBusy && !force) return;
@@ -2130,9 +2383,10 @@ export async function refreshBranchStatus(task, { includeBusy = false, force = f
   const { dirty, unpushed, behind } = await pendingWork(machineOf(task), task.worktreePath, task.branch, { base: baseOf(task) });
   const mergeStuck = await mergeInProgress(machineOf(task), task.worktreePath);
   let conflicts = [];
+  let mainSha = null;
   // A merge already under way owns the index: leave it alone while busy.
   if (behind > 0 && !(busy && mergeStuck)) {
-    const mainSha = await resolveRef(machineOf(task), task.worktreePath, `origin/${baseOf(task)}`);
+    mainSha = await resolveRef(machineOf(task), task.worktreePath, `origin/${baseOf(task)}`);
     // Analysing touches nothing, so it is safe even here; only the merge waits.
     if (mainSha) conflicts = (await analyzeMerge(machineOf(task), task.worktreePath, mainSha)).conflicts;
   }
@@ -2142,13 +2396,17 @@ export async function refreshBranchStatus(task, { includeBusy = false, force = f
     unpushed,
     dirty: dirty.length,
     conflicts: conflicts.length,
+    // What a conflict resolution needs to decide without asking git again: which
+    // `origin/<base>` the conflict is against and which files it is in.
+    mainSha: conflicts.length ? mainSha : null,
+    conflictFiles: conflicts.length ? conflicts : [],
     mergeStuck,
     at: now.toISOString(),
   };
   const prev = task.branchStatus;
   // Only touch the store when something actually changed: every touch rewrites
   // tasks.json whole and wakes every open board.
-  if (!prev || ['behind', 'unpushed', 'dirty', 'conflicts', 'mergeStuck'].some((k) => prev[k] !== next[k])) {
+  if (!prev || ['behind', 'unpushed', 'dirty', 'conflicts', 'mergeStuck', 'mainSha'].some((k) => prev[k] !== next[k])) {
     task.branchStatus = next;
     store.touch(task);
     return;
