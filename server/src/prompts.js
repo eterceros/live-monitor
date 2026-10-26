@@ -26,6 +26,8 @@ export const ALLOWED = {
   fix: ['issueNumber', 'issueTitle', 'branch', 'issueBody', 'planSection', 'extraContext', 'workPlanSection', 'e2eRule', 'parallel', 'processRule', 'shellRule', 'tmpRule', 'githubRule', 'projectContext'],
   // The second pass over a finished fix ("Cerrar huecos"): runs in the fix's own resumed session.
   'fix-gaps': ['issueNumber', 'issueTitle', 'issueBody', 'baseBranch', 'round', 'maxRounds', 'gapsContract', 'parallel', 'processRule', 'shellRule'],
+  // A PR waiting for review fell into a conflict with its base: the fix's own session merges it.
+  'resolve-conflicts': ['issueNumber', 'issueTitle', 'branch', 'baseBranch', 'behind', 'conflictCount', 'conflictFiles', 'parallel', 'processRule', 'shellRule'],
   // The body of the PR of a finished fix: written by a session, published by the board.
   'pr-body': ['issueNumber', 'issueTitle', 'issueBody', 'branch', 'diffSection', 'triageSummary', 'qaSection', 'githubRule', 'parallel'],
   demo: ['issueNumber', 'issueTitle', 'branch', 'diffSection', 'serversSection', 'parallel', 'workPlan', 'baseBranch'],

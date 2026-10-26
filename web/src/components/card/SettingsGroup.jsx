@@ -30,7 +30,7 @@ function TriRow({ task, settingKey, icon, name, onSet, onOpenSettings }) {
 export default function SettingsGroup({ task, m, h, compact = false, variant = 'expanded' }) {
   const t = useStrings();
   const { mode } = m;
-  const { onSetMode, onSetBrowserQa, onSetDemo, onSetApprovePlan, onSetFixGaps, onSetFullTests, onSetDesign, onOpenSettings } = h;
+  const { onSetMode, onSetBrowserQa, onSetDemo, onSetApprovePlan, onSetFixGaps, onSetFullTests, onSetResolveConflicts, onSetDesign, onOpenSettings } = h;
   return (
     <CardSection title={t.card.settings.title}>
       <div className="tcs-rows">
@@ -49,6 +49,9 @@ export default function SettingsGroup({ task, m, h, compact = false, variant = '
         {/* Off: the test phase runs only what the diff touched. On: the whole suite. */}
         <TriRow task={task} settingKey="fullTests" icon="flask" name={t.card.settings.fullTests}
           onSet={(v) => onSetFullTests(task.issue, v)} />
+        {/* On: a PR waiting for review that conflicts with its base is merged, tested and pushed by the board. */}
+        <TriRow task={task} settingKey="resolveConflicts" icon="branch" name={t.card.settings.resolveConflicts}
+          onSet={(v) => onSetResolveConflicts(task.issue, v)} />
         {mode !== 'unconfirmed' && (
           <SettingRow icon="hand" name={t.card.settings.manual} effective={mode === 'manual'}
             source={mode === 'manual' ? t.card.settings.sourceManual : t.card.settings.sourceAuto}

@@ -94,6 +94,7 @@ export default {
     openSettings: 'Open Settings',
     gaps: 'Gaps',
     fullTests: 'Full tests',
+    resolveConflicts: 'Resolve conflicts',
     manual: 'Manual mode',
     sourceManual: 'manual mode',
     sourceAuto: 'automatic',

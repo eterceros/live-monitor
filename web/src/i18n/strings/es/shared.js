@@ -13,6 +13,7 @@ export default {
     testing: { label: 'Testing', hint: 'Playwright e2e' },
     browser_qa: { label: 'Browser QA', hint: 'como un tester, con vídeo' },
     fix_gaps: { label: 'Cerrando huecos', hint: 'arregla lo que falta antes del PR' },
+    resolving_conflicts: { label: 'Resolviendo conflictos', hint: 'integra la rama base en la del PR y hace push' },
     pr_draft: { label: 'PR Draft', hint: 'listo para revisar' },
     ready: { label: 'Waiting Approval', hint: 'revisor asignado' },
     waiting_approval: { label: 'Waiting Approval', hint: 'PR abierto' },
@@ -108,6 +109,9 @@ export default {
     fullTestsOff: 'Tests acotados: solo corre lo que toca el diff; el resto lo corre CI',
     fullTestsOn: 'La fase de tests corre la suite completa del proyecto',
     fullTestsAuto: 'Alcance de los tests según el tablero ({state})',
+    resolveConflictsOff: 'Los conflictos con la base los resuelves tú',
+    resolveConflictsOn: 'Si el PR cae en conflicto con su base, el tablero lo integra, prueba lo que tocó el conflicto y hace push',
+    resolveConflictsAuto: 'La resolución de conflictos sigue al tablero ({state})',
   },
   metrics: {
     kind: { phase: 'fase', step: 'paso', session: 'sesión', wait: 'espera', chat: 'chat', op: 'operación' },

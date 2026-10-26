@@ -248,7 +248,7 @@ test('la variante que recibe cada plantilla es una decisión explícita', () => 
   const exempt = { exempt: true };
   const esperado = {
     triage: 'core', advisor: 'core', 'fix-plan': 'core', 'plan-revise': 'core', fix: 'edit',
-    'fix-gaps': 'core', 'pr-body': 'core', demo: 'core', 'change-request': 'core',
+    'fix-gaps': 'core', 'resolve-conflicts': 'edit', 'pr-body': 'core', demo: 'core', 'change-request': 'core',
     'review-replies': 'core', 'close-issue': exempt, 'chat-rules': 'edit', 'chat-project-rules': 'edit',
     'issue-draft': exempt, handoff: exempt, 'qa-plan': 'core', 'qa-run': 'core', 'plan-mode': 'core',
     'plan-task': 'edit', 'plan-retry': 'edit', 'plan-repair': 'edit',

@@ -99,6 +99,7 @@ export default {
     openSettings: 'Abrir Ajustes',
     gaps: 'Huecos',
     fullTests: 'Tests completos',
+    resolveConflicts: 'Conflictos',
     manual: 'Manual',
     sourceManual: 'manual',
     sourceAuto: 'automática',

@@ -129,6 +129,10 @@ export default {
         name: 'Suite complète',
         title: 'La phase de tests exécute toute la suite au lieu de ce que touche le diff. Désactivée par défaut : la CI fait le reste. Chaque carte peut la changer',
       },
+      resolveConflicts: {
+        name: 'Résoudre les conflits seul',
+        title: 'Une PR en attente de revue qui entre en conflit avec sa base est intégrée, testée là où elle a changé et poussée par le tableau. Jamais pendant une phase. Chaque carte peut le changer',
+      },
       demo: {
         title: 'La phase Demo génère les étapes pour essayer le changement à la fin du run. Désactivée ici, les tâches de ce projet en « auto » ne la génèrent pas ; chaque carte peut le modifier',
       },

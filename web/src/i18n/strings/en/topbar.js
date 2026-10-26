@@ -129,6 +129,10 @@ export default {
         name: 'Full test suite',
         title: 'The test phase runs the whole suite instead of only what the diff touched. Off by default: CI runs the rest. Each card can change it',
       },
+      resolveConflicts: {
+        name: 'Resolve conflicts alone',
+        title: 'A PR waiting for review that falls into a conflict with its base is merged, tested where it changed and pushed by the board. Never during a phase. Each card can change it',
+      },
       demo: {
         title: 'The Demo phase generates the steps to try the change when the run ends. Turned off here, tasks of this project set to “auto” do not generate it; each card can change it',
       },

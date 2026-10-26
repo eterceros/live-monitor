@@ -33,7 +33,7 @@ export function statusText(effective) {
  * decides what `auto` means, and the project's Browser QA switch can lock the card.
  *
  * @param {object} task a task as the board serves it
- * @param {'demo'|'browserQa'|'approvePlan'|'fixGaps'|'fullTests'} key
+ * @param {'demo'|'browserQa'|'approvePlan'|'fixGaps'|'fullTests'|'resolveConflicts'} key
  * @returns {{ value: 'on'|'off'|'auto', effective: boolean, source: string, locked: boolean, detail: string }}
  */
 export function taskTriState(task, key) {
@@ -105,13 +105,26 @@ export function taskTriState(task, key) {
           : fill(w.fullTestsAuto, { state: statusText(t.fullTestsWanted === true) });
       return { value, effective, source: value === 'auto' ? w.fromBoard : w.chosen, locked: false, detail };
     }
+    case 'resolveConflicts': {
+      // On unless the project or the card says otherwise: a PR waiting for
+      // review that falls into a conflict with its base is resolved by the board.
+      const value = t.resolveConflicts ?? 'auto';
+      const effective = value === 'on' || (value === 'auto' && t.resolveConflictsWanted !== false);
+      const w = words();
+      const detail = value === 'off'
+        ? w.resolveConflictsOff
+        : value === 'on'
+          ? w.resolveConflictsOn
+          : fill(w.resolveConflictsAuto, { state: statusText(t.resolveConflictsWanted !== false) });
+      return { value, effective, source: value === 'auto' ? w.fromBoard : w.chosen, locked: false, detail };
+    }
     default:
       throw new Error(`taskTriState: unknown setting "${key}"`); // i18n-ok: developer error
   }
 }
 
 /** Keys that are on unless the value is explicitly `false`; the rest are on only when exactly `true`. */
-const DEFAULT_ON = new Set(['autoStart', 'browserQa', 'demo']);
+const DEFAULT_ON = new Set(['autoStart', 'browserQa', 'demo', 'resolveConflicts']);
 
 const isOn = (key, v) => (DEFAULT_ON.has(key) ? v !== false : v === true);
 
@@ -120,7 +133,7 @@ const isOn = (key, v) => (DEFAULT_ON.has(key) ? v !== false : v === true);
  *
  * @param {object|undefined} own `settings.projects[activeProject] ?? {}`
  * @param {object|undefined} settings the board's flat settings
- * @param {string} key autoStart | browserQa | demo | approvePlan | fixGaps | fullTests
+ * @param {string} key autoStart | browserQa | demo | approvePlan | fixGaps | fullTests | resolveConflicts
  * @param {boolean} hasProject with no active project the flat value is edited, so there is no `auto`
  * @returns {{ value: 'on'|'off'|'auto', effective: boolean, source: string }}
  */
