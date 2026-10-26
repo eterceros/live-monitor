@@ -38,15 +38,24 @@ const OFFLINE_CODES = new Set([
  * which is which. What is here either reads or probes without leaving a trace
  * — `/port/free` binds and closes, `/daemon/find` is a filtered process list.
  *
+ * `/exec` and `/shell` are here too, and only for what happens *before the
+ * response headers*: the runner flushes them before it starts anything
+ * (`streamed` in `runner/app.js`), so a connection that dies first means the
+ * command never started, and one that died after the runner sent them makes
+ * the runner abort the command (`res.on('close')`). Nothing after the headers
+ * comes through `#fetch`: a broken stream is the caller's, as before. On
+ * 2026-10-20..22, 96 of 132 "runner does not answer" failures of the board
+ * were `/exec` → `UND_ERR_SOCKET` — a socket cut before a byte — and each one
+ * parked a task on a blink of the tailnet.
+ *
  * What is deliberately *not* here, and is tried exactly once as before: every
  * write (`/fs/write`, `/fs/mkdir`, `/fs/rm`, `/fs/copy`, `/fs/upload`),
- * `/daemon/kill`, `/zen-proxy/ensure` (it starts a process), `/exec` and
- * `/shell` — which stream, so a second attempt could double a command — and
- * the WebSockets, which do not come through here at all.
+ * `/daemon/kill`, `/zen-proxy/ensure` (it starts a process) and the
+ * WebSockets, which do not come through here at all.
  */
 const RETRYABLE_ROUTES = new Set([
   '/info', '/fs/exists', '/fs/read', '/fs/readdir', '/fs/readdir-deep', '/fs/realpath',
-  '/fs/download', '/port/free', '/daemon/find',
+  '/fs/download', '/port/free', '/daemon/find', '/exec', '/shell',
 ]);
 
 /**
