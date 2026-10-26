@@ -366,8 +366,22 @@ export function quotaWarning() {
 }
 
 /** A hold that stops new work: nothing starts under it, and clicks park or refuse. */
-export function quotaHoldsNewWork() {
-  return BLOCKING.includes(quotaHold()?.state);
+export function quotaHoldsNewWork(task) {
+  const hold = quotaHold();
+  if (!BLOCKING.includes(hold?.state)) return false;
+  // The canary is the one task the drain is waiting on: if its own phases saw
+  // the hold they would park it again before it ever reached a model, and the
+  // window would only reopen when `DRAIN_MAX_MS` gave up on it.
+  if (task && hold.state === 'draining' && hold.canary && hold.canary === keyOf(task)) return false;
+  return true;
+}
+
+/** Marks the task the drain is testing the window with. */
+export function markQuotaCanary(task) {
+  const hold = quotaHold();
+  if (hold?.state !== 'draining') return;
+  hold.canary = keyOf(task);
+  save();
 }
 
 /** The projection the board draws, exactly as the web block expects it. */
@@ -494,14 +508,25 @@ export function resumeHour(hold) {
   return new Date(until).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
-/** «at 16:30» / «as soon as the account is back». */
+/**
+ * The hour has passed but the hold is still on: the board is testing the window
+ * (`draining`) or the 30 s clock has not come round yet. Quoting that hour would
+ * say «comes back at 18:00» at 18:02, so it says what is actually happening.
+ */
+function hourHasPassed(hold) {
+  return Boolean(hold?.until) && hold.until <= Date.now();
+}
+
+/** «at 16:30» / «in a moment» / «as soon as the account is back». */
 export function describeResume(hold) {
+  if (hourHasPassed(hold)) return 'in a moment';
   const hour = resumeHour(hold);
   return hour ? `at ${hour}` : 'as soon as the account is back';
 }
 
 /** The same hour, in the form an «until» takes. */
 export function untilResume(hold) {
+  if (hourHasPassed(hold)) return 'while it checks that the account is back';
   const hour = resumeHour(hold);
   return hour ? `until ${hour}` : 'until the account is back';
 }

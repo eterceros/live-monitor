@@ -11,7 +11,7 @@ import {
 } from './claude.js';
 import { upgradeHoldsNewWork, upgradeRunning, assertNoUpgradeRunning } from './upgrade.js';
 import {
-  quotaHoldsNewWork, quotaHold, quotaHooks, parkForQuota, clearQuotaPark, parkedIssues, pruneParked,
+  quotaHoldsNewWork, markQuotaCanary, quotaHold, quotaHooks, parkForQuota, clearQuotaPark, parkedIssues, pruneParked,
   assertNoQuotaHold, quotaRefusalMessage, quotaWaitLine, describeResume, looksLikeUsageLimit,
 } from './quota.js';
 import { renderPrompt } from './prompts.js';
@@ -1134,7 +1134,7 @@ export function startTask(issue) {
   // Out of quota: the click is not refused, it is kept. The run you ordered
   // starts by itself when the window reopens — including the fact that you
   // ordered it, which is what `wasUserRun` carries for a manual task.
-  if (quotaHoldsNewWork()) {
+  if (quotaHoldsNewWork(task)) {
     store.addLog(task, 'inicio', `started by hand, but the account has no quota: it will start on its own ${describeResume(quotaHold())}`);
     return { ...parkClickForQuota(task, 'assigned'), mode: modeOf(task), oneShot };
   }
@@ -1647,7 +1647,7 @@ export async function acceptFix(issue) {
   store.addLog(task, 'fix', `taking the fix as done at ${head.slice(0, 8)}; continuing from the tests`);
   // Out of quota the decision still lands — `fixedAt` is written above — and
   // the tests run by themselves when the window reopens.
-  if (quotaHoldsNewWork()) {
+  if (quotaHoldsNewWork(task)) {
     parkTaskForQuota(task, 'testing');
     return head;
   }
@@ -1700,7 +1700,7 @@ export async function publishPr(issue, title) {
   store.addLog(task, 'pr', `you publish the PR with the title: ${text}`);
   // The title is kept whatever happens; out of quota, so is the run, which
   // starts by itself at the PR — nothing before it is paid for twice.
-  if (quotaHoldsNewWork()) {
+  if (quotaHoldsNewWork(task)) {
     parkTaskForQuota(task, 'pr');
     return { title: text, parked: true };
   }
@@ -1728,7 +1728,7 @@ export function retry(issue) {
   const resumeFrom = normalizePhase(task.phase) ?? normalizePhase(task.prevState) ?? 'assigned';
   // Out of quota: the retry is kept, not refused. It runs by itself at the
   // hour the window reopens, from this very phase.
-  if (quotaHoldsNewWork()) {
+  if (quotaHoldsNewWork(task)) {
     store.addLog(task, 'retry', `retry accepted from ${PHASE_LABEL[resumeFrom]} ("${resumeFrom}"), but the account has no quota`);
     parkTaskForQuota(task, resumeFrom, { previousError: task.lastError });
     return true;
@@ -1814,6 +1814,8 @@ export async function resumeAfterQuota(hold, { limit = Infinity } = {}) {
     // had started by hand gets that run back, or the very first phase boundary
     // would park it again for being manual.
     if (park?.wasUserRun) userRuns.add(keyOf(task));
+    // A finite `limit` is the canary: the one task that tests the window.
+    if (Number.isFinite(limit)) markQuotaCanary(task);
     clearQuotaPark(task);
     quotaSaid.delete(keyOf(task));
     task.error = null;
@@ -3966,7 +3968,7 @@ async function runFixPlan(task, issue, record) {
     // answer the board's question with «stop», which stops the plan without
     // that flag — and the plain error below would park the card in `error`,
     // which is exactly the click nobody is there to make.
-    if (plan.quotaStopped || quotaHoldsNewWork()) {
+    if (plan.quotaStopped || quotaHoldsNewWork(task)) {
       store.addLog(task, 'plan', `⏳ quota exhausted: the plan is stopped at ${planSummaryLine(plan)} and continues on its own ${describeResume(quotaHold())}`);
       throw new QuotaExhausted('fixing');
     }
@@ -4603,7 +4605,7 @@ async function testPhase(task, { machine = machineOf(task) } = {}) {
     // reason. The suite, the build and the install are never cut: they cost no
     // quota, and a green suite reaches `e2ePassedAt` before it meets the wall.
     // A repair round is a session, so that is where the run stops.
-    if (quotaHoldsNewWork()) {
+    if (quotaHoldsNewWork(task)) {
       store.addLog(task, 'e2e', `⏳ quota exhausted: no other repair round is launched; it resumes on its own ${describeResume(quotaHold())}`);
       throw new QuotaExhausted('testing');
     }
@@ -4737,7 +4739,7 @@ async function browserQaPhase(task, issue) {
     if (attempt > cfg.limits.maxFixIterations) {
       throw new Error(`Browser QA sigue fallando tras ${attempt} intento(s): ${outcome.failing.join('; ')}`);
     }
-    if (quotaHoldsNewWork()) {
+    if (quotaHoldsNewWork(task)) {
       store.addLog(task, 'qa', `⏳ quota exhausted: no other repair round is launched; it resumes on its own ${describeResume(quotaHold())}`);
       throw new QuotaExhausted('browser_qa');
     }
@@ -4798,7 +4800,7 @@ export async function gapsPhase(task, issue) {
 
   let previous = null;
   for (let round = 1; ; round += 1) {
-    if (quotaHoldsNewWork()) {
+    if (quotaHoldsNewWork(task)) {
       store.addLog(task, 'gaps', `⏳ quota exhausted: round ${round} is not launched; it resumes on its own ${describeResume(quotaHold())}`);
       throw new QuotaExhausted('fix_gaps');
     }
@@ -5352,7 +5354,7 @@ export async function composePrBody(task, issue) {
   // Like every other phase: a session opened against a closed window dies in
   // seconds and costs the run its resume point. The `pr` phase is where it
   // comes back, with the PR still unopened.
-  if (quotaHoldsNewWork()) throw new QuotaExhausted('pr');
+  if (quotaHoldsNewWork(task)) throw new QuotaExhausted('pr');
   const cfg = cfgOf(task);
   const tune = tunedSession(task, 'pr', { stage, cfg });
   const { model } = tune;
@@ -5559,7 +5561,7 @@ export async function generateDemoSteps(task, issue = null) {
   assertNotMoving(task);
   // A click gets a 409 with the hour; the pipeline's own last step gets the
   // exception that parks the task at `demo` instead of losing its resume point.
-  if (quotaHoldsNewWork()) throw new QuotaExhausted('demo');
+  if (quotaHoldsNewWork(task)) throw new QuotaExhausted('demo');
   if (task.demoBusy) throw new Error('The demo steps are already being generated');
   const cfg = cfgOf(task);
   if (!(await isProjectWorktree(machineOf(task), task.worktreePath))) {
@@ -6939,7 +6941,7 @@ export function decideTaskPlan(issue, body = {}) {
     // the replanning happens by itself. A pipeline parked on the plan is told,
     // so it stops at this very boundary instead of burning a session against
     // the wall; one that is not parked is simply marked and waits.
-    if (quotaHoldsNewWork()) {
+    if (quotaHoldsNewWork(task)) {
       store.addLog(task, 'plan', `no quota: the replan will start on its own ${describeResume(quotaHold())}`);
       if (entry) entry.resolve({ action: 'quota' });
       else parkTaskForQuota(task, 'fixing');
@@ -6959,7 +6961,7 @@ export function decideTaskPlan(issue, body = {}) {
   store.addLog(task, 'plan', `plan approved: ${record.selected.length} of ${record.tasks.length} tasks`);
   // The approval and the selection are already on the record: out of quota the
   // executor runs it by itself when the window reopens, from the fix.
-  if (quotaHoldsNewWork()) {
+  if (quotaHoldsNewWork(task)) {
     store.addLog(task, 'plan', `no quota: the approved plan will run on its own ${describeResume(quotaHold())}`);
     if (!settleTaskPending(task, { action: 'quota' })) {
       task.pending = null;
@@ -8139,7 +8141,7 @@ export function startChangeRequest(issue, { force = false } = {}) {
   // The same for the account's limit, forced or not: the change request stays
   // `pending`, which is precisely what `tick()` picks up when the window
   // reopens — no new code, and no session burnt against the wall.
-  if (quotaHoldsNewWork()) {
+  if (quotaHoldsNewWork(task)) {
     store.addLog(task, 'cr', `⏳ quota exhausted: the change request stays pending and will start on its own ${describeResume(quotaHold())}`);
     return false;
   }

@@ -222,6 +222,22 @@ test('`tick()` nunca reabre: el ciclo de vida es del temporizador', async () => 
   await finishAll();
 });
 
+test('la canaria no se aparca a sí misma: las fases ven la retención abierta solo para ella', async () => {
+  const a = freshTask({ state: 'started', branch: 'fix/9-e', phase: 'fixing' });
+  const b = freshTask({ state: 'started', branch: 'fix/9-f', phase: 'testing' });
+  hold();
+  for (const t of [a, b]) pipeline.parkTaskForQuotaOf(t, t.phase);
+  reopen();
+  await drain();
+  assert.equal(quota.quotaHold().state, 'draining');
+  assert.equal(quota.quotaHoldsNewWork(a), false, 'la canaria pasa: es la que prueba la ventana');
+  assert.equal(quota.quotaHoldsNewWork(b), true, 'las demás siguen paradas');
+  assert.equal(quota.quotaHoldsNewWork(), true, 'y el resto del tablero también');
+  quota.noteQuotaAlive();
+  await drain();
+  await finishAll();
+});
+
 test('la canaria: reabrir arranca una sola tarea y solo una señal de vida drena el resto', async () => {
   const a = freshTask({ state: 'started', branch: 'fix/9-b', phase: 'fixing' });
   const b = freshTask({ state: 'started', branch: 'fix/9-c', phase: 'testing' });
