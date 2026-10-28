@@ -20,7 +20,7 @@ RUNNER_PORT="${RUNNER_PORT:-7421}"
 GIT_NAME="${GIT_NAME:-$(git config --global user.name 2>/dev/null || true)}"
 GIT_EMAIL="${GIT_EMAIL:-$(git config --global user.email 2>/dev/null || true)}"
 # Must match the SDK the board runs: SDK 0.3.N pairs with CLI 2.1.N.
-CLAUDE_VERSION_WANTED="${CLAUDE_VERSION_WANTED:-2.1.311}"
+CLAUDE_VERSION_WANTED="${CLAUDE_VERSION_WANTED:-2.1.312}"
 # Must match config.json `qa.mcpVersion` on the board.
 MCP_VERSION="${MCP_VERSION:-0.0.80}"
 
