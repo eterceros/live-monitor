@@ -1,6 +1,6 @@
 Redacta el CUERPO del pull request del issue #787 ("ci(inferno): US Core nightly red since 2026-08-09 — care_team_role_search hits localhost:8080, asserted-date search does not filter"), ya arreglado y probado en la rama `fix/787-inferno-us-core-nightly`.
 
-**TODO LO QUE ACABE EN GITHUB VA EN INGLÉS:** mensajes de commit, título y cuerpo del PR, comentarios de PR o de issue y respuestas a hilos de review — aunque estas instrucciones y la conversación estén en español. Aquí eso alcanza a todo lo que escribas: encabezados, tablas y los textos de dentro del diagrama.
+**TODO LO QUE ACABE EN GITHUB VA EN INGLÉS:** mensajes de commit, título y cuerpo del PR, comentarios de PR o de issue y respuestas a hilos de review — aunque estas instrucciones y la conversación estén en español. Aquí eso alcanza a todo lo que escribas: encabezados, tablas y las frases de mecanismo.
 
 Cuerpo del issue:
 <<issueBody>>
@@ -47,29 +47,13 @@ SOLO el cuerpo del PR, en Markdown, listo para publicarse tal cual: sin preámbu
 
 ### 1. `## At a glance: before vs. after`
 
-SIEMPRE la primera sección. Su único objetivo: que un reviewer entienda qué se arregló **sin leer el resto del cuerpo**. Lleva dos piezas.
+SIEMPRE la primera sección. Su único objetivo: que un reviewer entienda qué se arregló **de un solo vistazo y sin leer el resto del cuerpo**. La pieza principal es una tabla.
 
-**Un bloque de código mermaid con un `flowchart LR`** y dos subgrafos, `BEFORE["❌ Before"]` y `AFTER["✅ After"]`, cada uno con `direction TB` y una cadena corta de nodos. Los nodos cuentan el **mecanismo**: qué hacía el código que fallaba, paso a paso, y qué hace ahora en su lugar. No son adjetivos («roto» → «arreglado»), son la secuencia real. Usa `<br/>` para partir un nodo largo; nada de comillas dentro del texto de un nodo.
+**Una tabla comparativa de 3 a 5 filas**, con encabezados `| | Before | After |`, una fila por magnitud que cambia: cuentas, latencias, filas que quedan, reintentos, llamadas. Números y hechos, no valoraciones. Si una magnitud la mediste en este PR, dilo en la fila. Tiene que caber en una pantalla: celdas cortas, sin párrafos dentro de una celda.
 
-```mermaid
-flowchart LR
-  subgraph BEFORE["❌ Before"]
-    direction TB
-    b1["<lo que llega>"] --> b2["<lo que hace el código>"]
-    b2 --> b3["<la consecuencia mala, concreta>"]
-  end
-  subgraph AFTER["✅ After"]
-    direction TB
-    a1["<lo mismo que llega>"] --> a2["<lo que hace ahora>"]
-    a2 --> a3["<la consecuencia buena, medible>"]
-  end
-```
+**Opcional, y solo si los números no cuentan el mecanismo** (un arreglo de lógica que no se mide, por ejemplo): dos líneas de texto justo antes de la tabla, `**Before:** paso → paso → paso` y `**After:** paso → paso`, de 3 o 4 pasos cortos cada una, que cuenten la secuencia real —qué hacía el código y qué hace ahora—, no adjetivos («roto» → «arreglado»). Si la tabla ya lo dice, no las pongas.
 
-**Y una tabla comparativa de 3 a 5 filas**, con encabezados `| | Before | After |`, una fila por magnitud que cambia: cuentas, latencias, filas que quedan, reintentos, llamadas. Números y hechos, no valoraciones. Si una magnitud la mediste en este PR, dilo en la fila.
-
-Cierra la valla del bloque: una valla abierta se traga el resto del cuerpo dentro de una caja gris, y en el editor donde lo escribiste se ve perfecto.
-
-Si el cambio no se deja dibujar honestamente —no hay dos mecanismos que contrastar—, pon solo la tabla. Un diagrama que no explica nada ocupa el sitio del que sí lo haría.
+**Nada de diagramas.** Ni mermaid ni ningún otro gráfico, ni ASCII art: se dibujan enormes y desproporcionados frente al resto del cuerpo, y la tabla se lee mejor. Si no hay magnitudes que comparar, una tabla de dos o tres filas con lo que cambia de comportamiento (qué pasaba antes, qué pasa ahora) basta.
 
 ### 2. `## Problem`
 
@@ -91,6 +75,7 @@ Dentro de un bloque de código GitHub no la lee, y el issue se queda abierto sin
 
 ## Prohibido
 
+- **Diagramas de cualquier tipo** (mermaid, ASCII art, gráficos): la comparación va en la tabla.
 - **Imágenes, vídeos y GIFs.** Ni `![...](...)`, ni `<img>`, ni `<video>`, ni adjuntos, ni enlaces a capturas o a URLs `raw`/`user-images`. La evidencia se cuenta con texto: un fragmento de la salida de los tests dentro de un bloque de código dice más y no caduca.
 - **Commitear evidencia al repositorio** para poder enlazarla. Capturas, vídeos y volcados no entran en el repo.
 - **Nombrar el tablero (hfs-monitor) ni la herramienta que condujo el trabajo.** Ni agentes, ni automatización, ni «generated with». Escribes como el autor del PR, en voz neutra o en primera persona del plural.
