@@ -56,7 +56,7 @@ import { PR_TITLE_MAX } from './prtitle.js';
 
 /**
  * The cap github.js already applies to a PR body (`assertPublishable(body, …,
- * { maxChars: 60_000 })`). A normal body — mermaid diagram, a table, four
+ * { maxChars: 60_000 })`). A normal body — a before/after table, four
  * sections — blows past the 4 000 characters `publishProblems` defaults to, so
  * without this a good PR would be denied for being long. It follows what is
  * being published, not which verb publishes it: a PR body written through

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { AT_A_GLANCE_HEADING, prBodyProblems, prBodyComplaint } from '../src/prbody.js';
 
@@ -18,11 +19,9 @@ ValueSet.
 
 ## What changed
 
-\`\`\`mermaid
-flowchart LR
-  A[search] --> B{ValueSet known?}
-  B -- no --> C[400 OperationOutcome]
-\`\`\`
+| | Before | After |
+|---|---|---|
+| Unknown ValueSet in \`:in\` | \`200\` with an empty bundle | \`400\` with an OperationOutcome |
 
 | Crate | Change |
 |---|---|
@@ -188,4 +187,13 @@ test('the missing-Closes error says exactly what to add', () => {
   const about = problems.find((p) => /Closes #12/.test(p));
   assert.ok(about, problems.join(' | '));
   assert.match(about, /añade una línea propia con exactamente `Closes #12`/);
+});
+
+test('el prompt pide una tabla de un vistazo y ningún diagrama', () => {
+  const prompt = readFileSync(new URL('../prompts/pr-body.md', import.meta.url), 'utf8');
+  assert.match(prompt, /\| \| Before \| After \|/, 'la tabla comparativa sigue siendo obligatoria');
+  assert.match(prompt, /Nada de diagramas/);
+  assert.doesNotMatch(prompt, /```mermaid/, 'ya no hay un ejemplo de diagrama que copiar');
+  assert.doesNotMatch(prompt, /flowchart|subgraph/);
+  assert.match(prompt, /\*\*Before:\*\* paso/, 'el mecanismo opcional es texto, de dos líneas');
 });
