@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { readTasksFileMerged } from '../src/splitfmt.js';
 
 /**
  * El store es un singleton y `config.js` fija su directorio en la primera
@@ -11,6 +12,8 @@ import path from 'node:path';
  */
 const DIR = mkdtempSync(path.join(tmpdir(), 'hfsmon-store-'));
 process.env.HFSMON_DATA_DIR = DIR;
+// La ventana de producción es de 3 s; estas pruebas esperan la de antes (los tiempos de abajo).
+process.env.HFSMON_PERSIST_DELAY_MS = '250';
 const FILE = path.join(DIR, 'tasks.json');
 const { store } = await import('../src/store.js');
 after(() => {
@@ -19,7 +22,7 @@ after(() => {
 });
 
 const issue = (n) => ({ number: n, title: `prueba ${n}`, labels: [], url: 'x', closed: false });
-const enDisco = () => JSON.parse(readFileSync(FILE, 'utf8'));
+const enDisco = () => readTasksFileMerged(FILE);
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('el arranque deja el archivo escrito sin esperar a nada', () => {

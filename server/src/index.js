@@ -22,7 +22,7 @@ import {
   backfillAgent, agentCalls, stopBackground, startTask, isUserRun, isRunning,
   draftIssueClosing, discardIssueClosing, closeIssueWithoutPr, renameChat, bootstrapRepo, changeBaseBranch, refreshGitNow,
 } from './pipeline.js';
-import { holderKey, getHolder, getHolderByKey, allHolders, holderMachines } from './projectchats.js';
+import { holderKey, getHolder, getHolderByKey, allHolders, holderMachines, migrateProjectChatsOnBoot } from './projectchats.js';
 import { registerIssueDraftRoutes } from './issuedraft.js';
 import { HOLDER_TAB } from './chattabs.js';
 import { machineOf, machines } from './machine.js';
@@ -39,7 +39,7 @@ import { hasCommits, isProjectWorktree, pendingWork } from './worktree.js';
 import { startStack, stopStack, publicStack } from './stack.js';
 import { saveAttachment, acceptedAttachments } from './attachments.js';
 import { validatePrompts } from './prompts.js';
-import { accessGuard, socketRefusal, describeAccess, listenHost } from './access.js';
+import { accessGuard, socketRefusal, describeAccess, listenHost, isDirectLoopback } from './access.js';
 import { chatsOf, chatById, isChatBusy, chatRunning } from './chats.js';
 import { planProgress } from './planexec.js';
 import { filesRouter } from './files.js';
@@ -82,6 +82,35 @@ const app = express();
 // The token first, the body after. The guard reads only headers, the cookie
 // and the query, so nobody without the token gets up to 25 MB parsed.
 app.use(accessGuard);
+// «Save everything now», for stop.ps1: it ends the board with taskkill /F, which
+// skips every exit handler, and the store keeps the last few seconds in memory.
+// Direct loopback only (never through a proxy), and before the upgrade guard: a
+// flush is exactly what an upgrade wants too. It answers when the files are written.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const hostnameOf = (hostPort) => String(hostPort ?? '').replace(/:\d+$/, '').toLowerCase();
+app.post('/api/flush', (req, res) => {
+  // Direct loopback on the socket AND a loopback Host (a rebinding page talks to a
+  // loopback socket under its own name) AND no foreign Origin (a browser tab).
+  const origin = req.get('origin');
+  let originHost = '';
+  try { originHost = origin ? new URL(origin).hostname : ''; } catch { originHost = 'invalid'; }
+  const local = isDirectLoopback(req)
+    && LOOPBACK_HOSTS.has(hostnameOf(req.get('host')))
+    && (!origin || LOOPBACK_HOSTS.has(originHost) || LOOPBACK_HOSTS.has(`[${originHost}]`));
+  if (!local) return res.status(403).json({ error: 'local only' });
+  try {
+    // flush() does not throw for a write that failed (the board must not die of a full
+    // disk); it says which ones failed. «Saved» is only said when nothing did.
+    const failures = store.flush();
+    if (failures.length) {
+      const why = failures.map((f) => `${String(f.file).split(/[\\/]/).pop()}: ${f.error}`).join('; ');
+      return res.status(500).json({ ok: false, error: `could not save: ${why}`, failures });
+    }
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
 // The file viewer: read-only, GET only, so it needs no body parser.
 app.use(filesRouter);
 // The folder browser for the project dialog: read-only, GET only, and it
@@ -1713,7 +1742,24 @@ function broadcast(payload) {
   }
 }
 
-store.on('task', (task) => broadcast({ type: 'task', task: publicTask(task) }));
+// A task is announced at once the first time, then at most once per window: a
+// chat turn touches its task per tool call, and each announcement serializes the
+// whole card for every open board. The trailing send carries the latest state,
+// so nothing is lost, only merged.
+const TASK_BROADCAST_WINDOW_MS = 250;
+const taskWindows = new Map();
+store.on('task', (task) => {
+  const open = taskWindows.get(task);
+  if (open) { open.again = true; return; }
+  broadcast({ type: 'task', task: publicTask(task) });
+  const win = { again: false, timer: null };
+  win.timer = setTimeout(() => {
+    taskWindows.delete(task);
+    if (win.again) broadcast({ type: 'task', task: publicTask(task) });
+  }, TASK_BROADCAST_WINDOW_MS);
+  win.timer.unref?.();
+  taskWindows.set(task, win);
+});
 // `project` is the store's own last argument (`store.js`), forwarded, not
 // guessed here: only the store knows which file the task came out of. The two
 // halves stay separate on the wire, as they do in every URL — `#` never
@@ -1815,6 +1861,10 @@ configEvents.on('invalid', (e) => {
 // never polls or resumes anything. `listening` is still false here, so the
 // crash guard exits with 1 and the restart and upgrade scripts see a dead board.
 const promptCount = validatePrompts();
+
+// The project chats' file converts to the split format (once, with a backup) here,
+// where a few seconds of work block nobody, and not on the first message of a chat.
+migrateProjectChatsOnBoot();
 
 bootHost = listenHost();
 server.listen(config.port, bootHost, () => {

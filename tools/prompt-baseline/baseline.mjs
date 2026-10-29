@@ -34,6 +34,8 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+// Pure (only node:*): puts a task's log back when the board has split it into taskdata/.
+import { readTasksFileMerged } from '../../server/src/splitfmt.js';
 
 // `config.js` is imported for `DATA_DIR` alone (it honours `HFSMON_DATA_DIR`).
 // It is safe: it reads `config.json`, unrefs its watchers, and writes nothing.
@@ -68,13 +70,12 @@ const die = (message) => {
 
 /** The tasks, read as plain JSON. `store.js` is never imported: it rewrites the board. */
 function readTasks() {
-  let raw;
+  let data;
   try {
-    raw = readFileSync(TASKS_FILE, 'utf8');
+    data = readTasksFileMerged(TASKS_FILE);
   } catch (e) {
     die(`No se puede leer ${TASKS_FILE}: ${e.message}`);
   }
-  const data = JSON.parse(raw);
   const list = Array.isArray(data) ? data : Object.values(data);
   const entries = list.map(taskEntry).filter((t) => Number.isFinite(t.issue));
   if (!entries.length) die(`${TASKS_FILE} no trae ninguna tarea con número de issue`);

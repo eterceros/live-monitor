@@ -21,8 +21,10 @@
  * demo that ran during the PR, each intersected with its phase span.
  */
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import path from 'node:path';
+// Pure (only node:*): puts a task's log back when the board has split it into taskdata/.
+import { readTasksFileMerged } from '../../server/src/splitfmt.js';
 import { pathToFileURL } from 'node:url';
 import { summarize } from '../../server/src/metrics.js';
 
@@ -169,7 +171,7 @@ function main(argv) {
   for (const f of files) {
     let data;
     try {
-      data = JSON.parse(readFileSync(path.join(dir, f), 'utf8'));
+      data = readTasksFileMerged(path.join(dir, f));
     } catch (e) {
       die(`Cannot read ${f}: ${e.message}. If the board is writing it, retry.`);
     }

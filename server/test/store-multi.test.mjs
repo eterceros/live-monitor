@@ -9,6 +9,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { readTasksFileMerged } from '../src/splitfmt.js';
 import { DATA_DIR } from './isolate.mjs';
 
 // Escrito ANTES de importar el store: es el archivo que el tablero se encuentra
@@ -24,7 +25,7 @@ const { store } = await import('../src/store.js');
 after(() => store.flush());
 
 const issue = (n) => ({ number: n, title: `t${n}`, labels: [], url: `https://x/${n}`, closed: false });
-const enDisco = (file) => JSON.parse(readFileSync(file, 'utf8'));
+const enDisco = (file) => readTasksFileMerged(file);
 
 test('un tasks.json de antes se adopta tal cual: se carga y se le estampa el proyecto', () => {
   const t = store.get(7);
