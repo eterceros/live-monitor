@@ -7,7 +7,7 @@ import {
 import { sameTask } from '../taskKey.js';
 import { latestPhaseModel, modelEffortLabel, meta } from '../status.js';
 import { useDictation, dictationSupport, useStopDictationOnEscape } from '../useDictation.js';
-import { useSpeech, speechSupport } from '../useSpeech.js';
+import { useSpeech, speechSupport, primeSpeech } from '../useSpeech.js';
 import { detailCommand, splitVoice } from '../voice.js';
 import { onVoicePrefsChange, readVoiceOn, writeVoiceOn } from '../voicePrefs.js';
 import { useComposerHeight } from '../useComposerHeight.js';
@@ -321,6 +321,7 @@ export default function ChatPanel({
     writeVoiceOn(chat?.id, on);
     setVoiceOn(on);
     if (!on) speech.stop();
+    else primeSpeech();   // this tap is what lets a phone speak later, when the reply arrives
   };
   // Esc silences it at once, from wherever the focus is.
   useEffect(() => {
@@ -428,6 +429,8 @@ export default function ChatPanel({
   const send = async () => {
     const body = text.trim();
     if ((!body && !files.length) || !ready || sending || !chat) return;
+    // Sent from a tap or a key: the moment a phone lets the page speak (see primeSpeech).
+    if (voiceOn && voiceSupported) primeSpeech();
     // A typed `/model <name>` is answered by the server, but the cache warning
     // belongs here: resolve the name as the server does and ask only when it
     // lands on a different model. An unresolvable name goes through as typed.

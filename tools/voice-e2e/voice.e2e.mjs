@@ -17,7 +17,11 @@ const results = [];
 const check = (name, ok, detail = '') => { results.push({ name, ok, detail }); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`); };
 
 const browser = await chromium.launch({ headless: true });
-const context = await browser.newContext({ locale: 'es-ES', viewport: { width: 1400, height: 900 } });
+// `--mobile` runs it at the size and with the touch of a phone: the same page, narrower.
+const MOBILE = process.env.E2E_MOBILE === '1';
+const context = await browser.newContext(MOBILE
+  ? { locale: 'es-ES', viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true }
+  : { locale: 'es-ES', viewport: { width: 1400, height: 900 } });
 const page = await context.newPage();
 
 // The speech engine, as a recorder, before any page script runs.
@@ -35,6 +39,8 @@ await page.addInitScript(() => {
     getVoices: () => voices,
     addEventListener() {}, removeEventListener() {},
     speak(u) {
+      // The silent word that unlocks a phone's synthesiser is counted apart: it is not something the chat said.
+      if (!u.text.trim()) { window.__primed = (window.__primed ?? 0) + 1; return; }
       window.__spoken.push({ text: u.text, rate: u.rate, voice: u.voice?.name ?? null });
       synth.speaking = true;
       // Finishes a moment later, like an engine: the queue moves on by itself.
@@ -99,6 +105,7 @@ check('apagado: el resumen se ve igual, destacado y sin etiquetas', (await page.
 // Turn it on.
 await speaker.click();
 check('al pulsar queda encendido', (await speaker.getAttribute('aria-pressed')) === 'true');
+check('el toque que lo enciende desbloquea la voz del móvil (palabra en silencio)', (await page.evaluate(() => window.__primed ?? 0)) >= 1);
 
 // Sending carries the voice mark.
 await page.locator('textarea').first().fill('Cuéntame cómo va');
@@ -113,6 +120,18 @@ const spoken = await page.evaluate(() => window.__spoken.map((s) => s.text));
 check('habla solo el resumen, por frases', spoken.join('|') === 'Encontré el fallo.|Ya lo arreglé y pasan los tests.', spoken.join('|'));
 check('el detalle no se oye', !spoken.some((s) => /Detalle|código/.test(s)));
 await page.screenshot({ path: path.join(OUT, '03-spoken-summary.png') });
+
+if (MOBILE) {
+  // On a phone the rest is the same page: what matters is that the speaker is there, can be tapped and speaks.
+  await page.screenshot({ path: path.join(OUT, '03-mobile-spoken.png') });
+  const box = await speaker.boundingBox();
+  check('móvil: el altavoz cabe en pantalla y es tocable', box && box.x >= 0 && box.x + box.width <= 390 && box.width >= 32 && box.height >= 32, JSON.stringify(box));
+  await browser.close();
+  const bad = results.filter((r) => !r.ok);
+  console.log(`\n${results.length - bad.length}/${results.length} comprobaciones`);
+  fs.writeFileSync(path.join(OUT, 'results.json'), JSON.stringify(results, null, 2));
+  process.exit(bad.length ? 1 : 0);
+}
 
 // A message with no tag says nothing.
 const before = (await page.evaluate(() => window.__spoken.length));

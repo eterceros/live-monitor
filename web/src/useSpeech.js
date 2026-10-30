@@ -11,6 +11,22 @@ import { onVoicePrefsChange, readVoiceListen, readVoiceName, readVoiceRate } fro
 export const speechSupport = () => typeof window !== 'undefined'
   && 'speechSynthesis' in window && typeof window.SpeechSynthesisUtterance !== 'undefined';
 
+/**
+ * Unlocks the synthesiser for what comes later. A phone's browser (iOS Safari
+ * above all) only lets a page speak after a tap has made it speak once: a reply
+ * that arrives over the socket, with no tap behind it, is silently dropped. So
+ * the tap that turns the speaker on, and the one that sends a message, say one
+ * silent word. It costs nothing and changes nothing on a computer.
+ */
+export function primeSpeech() {
+  if (!speechSupport()) return;
+  try {
+    const word = new window.SpeechSynthesisUtterance(' ');
+    word.volume = 0;
+    window.speechSynthesis.speak(word);
+  } catch { /* a browser that refuses: the voice will say so by being silent */ }
+}
+
 /** Every voice of this system, by language and then name: the chat speaks whichever language its summary is in. */
 export function listVoices() {
   if (!speechSupport()) return [];
