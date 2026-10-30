@@ -272,7 +272,7 @@ export default function SettingsMenu({
                     <span className="sm-select">
                       <select aria-label={t.topbar.settings.voiceName} value={voice.name} onChange={(e) => writeVoiceName(e.target.value)}>
                         <option value="">{t.topbar.settings.voiceAuto}</option>
-                        {voice.voices.map((v) => <option key={v.name} value={v.name}>{v.name}</option>)}
+                        {voice.voices.map((v) => <option key={v.name} value={v.name}>{v.name} · {v.lang}</option>)}
                       </select>
                       <Icon name="chevron-down" />
                     </span>

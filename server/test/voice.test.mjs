@@ -38,3 +38,10 @@ test('un mensaje de voz que espera a que acabe el turno conserva su marca', () =
   assert.equal('voice' in notes[1], false, 'sin marca no se guarda nada');
   assert.deepEqual(chat.notes, []);
 });
+
+test('la regla de voz responde en el idioma en que le hablan y conoce las órdenes en otros idiomas', () => {
+  assert.match(VOICE_RULE, /Contesta en el idioma en que te hablan/);
+  for (const phrase of ['more detail', 'plus de détails', 'mehr Details', 'less detail', 'repeat that']) {
+    assert.ok(VOICE_RULE.includes(phrase), phrase);
+  }
+});

@@ -27,6 +27,7 @@ await page.addInitScript(() => {
   const voices = [
     { name: 'Voz de prueba A', lang: 'es-ES', default: true, localService: true, voiceURI: 'a' },
     { name: 'Voz de prueba B', lang: 'es-MX', default: false, localService: true, voiceURI: 'b' },
+    { name: 'Test voice EN', lang: 'en-US', default: false, localService: true, voiceURI: 'c' },
   ];
   window.SpeechSynthesisUtterance = function Utterance(text) { this.text = text; this.rate = 1; this.voice = null; this.lang = ''; };
   const synth = {
@@ -139,7 +140,12 @@ await page.screenshot({ path: path.join(OUT, '04-after-reload.png') });
 // What is dictated, typed and cleared in the box.
 const box = page.locator('textarea').first();
 const mic = page.locator('button.mic').first();
-const say = (words) => page.evaluate((w) => window.__recs.at(-1).onresult({ resultIndex: 0, results: [[{ transcript: w }]] }), words);
+// A final result, as a recogniser gives it once the speaker has paused.
+const say = (words) => page.evaluate((w) => {
+  const result = [{ transcript: w }];
+  result.isFinal = true;
+  window.__recs.at(-1).onresult({ resultIndex: 0, results: [result] });
+}, words);
 await box.fill('');
 check('con la caja vacía no hay ✕', (await page.locator('button.cp-clear').count()) === 0);
 
@@ -178,6 +184,69 @@ check('la ✕ también corta un dictado en curso', (await mic.getAttribute('aria
   && (await page.evaluate(() => window.__recs.at(-1).aborted === true)));
 check('sin texto y sin dictado desaparece la ✕', (await page.locator('button.cp-clear').count()) === 0);
 
+// A dictated whole command is sent by itself when the dictation ends; anything else is not.
+sent.length = 0;
+await box.fill('');
+await mic.click();
+await say('hola, solo estoy dictando');
+await box.focus();
+await page.keyboard.press('Escape');
+await page.waitForTimeout(300);
+check('un dictado cualquiera NO se envía solo', sent.length === 0 && (await box.inputValue()) === 'hola, solo estoy dictando');
+await box.fill('');
+await mic.click();
+await say('más detalle');
+await box.focus();
+await page.keyboard.press('Escape');
+await page.waitForTimeout(400);
+check('«más detalle» dictado se envía solo, con la marca de voz', sent.length === 1 && sent[0].text === 'más detalle' && sent[0].voice === true, JSON.stringify(sent[0] ?? null));
+check('y la caja queda vacía', (await box.inputValue()) === '');
+sent.length = 0;
+await mic.click();
+await say('More detail');
+await box.focus();
+await page.keyboard.press('Escape');
+await page.waitForTimeout(400);
+check('«More detail» en inglés también', sent.length === 1 && sent[0].text === 'More detail', JSON.stringify(sent[0] ?? null));
+
+// The voice follows the language of what it reads.
+await page.evaluate(() => { window.__spoken.length = 0; });
+toPage({ ...chat, message: { id: 'e1', role: 'assistant', text: '<voz>I found the bug and fixed it, and all the tests pass.</voz>', ts: new Date().toISOString() } });
+await page.waitForTimeout(500);
+const english = await page.evaluate(() => window.__spoken.map((s) => s.voice));
+check('un resumen en inglés lo lee una voz inglesa', english.length > 0 && english.every((v) => v === 'Test voice EN'), english.join('|'));
+await page.evaluate(() => { window.__spoken.length = 0; });
+toPage({ ...chat, message: { id: 'e2', role: 'assistant', text: '<voz>Encontré el fallo y ya lo arreglé, pasan todos los tests.</voz>', ts: new Date().toISOString() } });
+await page.waitForTimeout(500);
+const spanish = await page.evaluate(() => window.__spoken.map((s) => s.voice));
+check('y uno en español, una voz española', spanish.length > 0 && spanish.every((v) => /^Voz de prueba/.test(v)), spanish.join('|'));
+
+// Voice commands while it talks (the switch is off by default: turned on here).
+await page.evaluate(() => localStorage.setItem('hfsmon-voice-listen', 'true'));
+await page.evaluate(() => { window.__spoken.length = 0; window.__cancels = 0; });
+const long = `<voz>${'Una frase larga que sigue sonando mientras se escucha. '.repeat(10)}</voz>`;
+toPage({ ...chat, message: { id: 'l1', role: 'assistant', text: long, ts: new Date().toISOString() } });
+await page.waitForTimeout(250);
+check('mientras habla, el micrófono de las órdenes está escuchando', (await page.evaluate(() => window.__recs.at(-1).started === true)));
+await say('para');
+await page.waitForTimeout(250);
+check('«para» entero lo calla', (await page.evaluate(() => window.__cancels)) >= 1);
+sent.length = 0;
+toPage({ ...chat, message: { id: 'l2', role: 'assistant', text: long, ts: new Date().toISOString() } });
+await page.waitForTimeout(250);
+await page.evaluate(() => { window.__cancels = 0; });
+await say('menos detalle');
+await page.waitForTimeout(350);
+check('«menos detalle» lo calla y se envía solo', (await page.evaluate(() => window.__cancels)) >= 1 && sent.length === 1 && sent[0].text === 'menos detalle' && sent[0].voice === true, JSON.stringify(sent[0] ?? null));
+toPage({ ...chat, message: { id: 'l3', role: 'assistant', text: long, ts: new Date().toISOString() } });
+await page.waitForTimeout(250);
+await page.evaluate(() => { window.__cancels = 0; });
+await say('para que funcione bien');
+await page.waitForTimeout(250);
+check('una frase que solo contiene «para» no lo calla', (await page.evaluate(() => window.__cancels)) === 0);
+await page.keyboard.press('Escape');
+await page.evaluate(() => localStorage.removeItem('hfsmon-voice-listen'));
+
 // Turning it off: sends without the mark and stops speaking.
 await page.locator('button.speaker').click();
 sent.length = 0;
@@ -190,8 +259,8 @@ check('apagado: el mensaje sale sin la marca de voz', sent.length === 1 && !('vo
 await page.getByRole('button', { name: /ajustes|settings/i }).first().click().catch(() => {});
 await page.waitForTimeout(400);
 const menuText = await page.locator('body').innerText();
-check('los ajustes ofrecen voz, velocidad, valor por defecto y escuchar «para»',
-  /Voz del chat/.test(menuText) && /Velocidad de la voz/.test(menuText) && /Voz en chats nuevos/.test(menuText) && /Escuchar «para»/.test(menuText));
+check('los ajustes ofrecen voz, velocidad, valor por defecto y órdenes de voz',
+  /Voz del chat/.test(menuText) && /Velocidad de la voz/.test(menuText) && /Voz en chats nuevos/.test(menuText) && /Órdenes de voz/.test(menuText));
 await page.screenshot({ path: path.join(OUT, '05-settings.png') });
 
 await browser.close();

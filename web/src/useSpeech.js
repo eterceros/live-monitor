@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Recognition, dictationSupport, dropMic, takeMic } from './useDictation.js';
-import { isStopCommand, toUtterances } from './voice.js';
+import { Recognition, dictationSupport, dropMic, recognitionLang, takeMic } from './useDictation.js';
+import { detailCommand, isStopCommand, toUtterances } from './voice.js';
 import { onVoicePrefsChange, readVoiceListen, readVoiceName, readVoiceRate } from './voicePrefs.js';
 
 /**
@@ -11,20 +11,28 @@ import { onVoicePrefsChange, readVoiceListen, readVoiceName, readVoiceRate } fro
 export const speechSupport = () => typeof window !== 'undefined'
   && 'speechSynthesis' in window && typeof window.SpeechSynthesisUtterance !== 'undefined';
 
-/** The voices of this system, in the language the chat speaks first when asked. */
-export function listVoices(lang = 'es') {
+/** Every voice of this system, by language and then name: the chat speaks whichever language its summary is in. */
+export function listVoices() {
   if (!speechSupport()) return [];
-  const all = window.speechSynthesis.getVoices();
-  const mine = all.filter((v) => v.lang?.toLowerCase().startsWith(lang));
-  return mine.length ? mine : all;
+  return [...window.speechSynthesis.getVoices()].sort((a, b) => `${a.lang} ${a.name}`.localeCompare(`${b.lang} ${b.name}`));
 }
 
-/** The chosen voice by name, else the first of the language, else the browser's own pick. */
-export function pickVoice(voices, name, lang = 'es') {
-  return voices.find((v) => name && v.name === name)
-    ?? voices.find((v) => v.lang?.toLowerCase().startsWith(lang))
-    ?? null;
+/** A voice's language is its tag's first part: «es-MX» speaks `es`. */
+const speaks = (voice, lang) => Boolean(lang) && voice.lang?.toLowerCase().startsWith(lang);
+
+/**
+ * The voice for a text in `lang`: the one the person chose, if it speaks that
+ * language (a Spanish voice reading English sounds wrong, so a choice for
+ * another language gives way); else the first voice of the language; else
+ * nothing, and the browser picks.
+ */
+export function pickVoice(voices, name, lang) {
+  const chosen = voices.find((v) => name && v.name === name);
+  if (chosen && (!lang || speaks(chosen, lang))) return chosen;
+  return voices.find((v) => speaks(v, lang)) ?? null;
 }
+
+const BCP47 = { es: 'es-ES', en: 'en-US', fr: 'fr-FR', de: 'de-DE' };
 
 /**
  * Says text aloud, one sentence at a time, and can be cut at once. `speak`
@@ -32,11 +40,14 @@ export function pickVoice(voices, name, lang = 'es') {
  * `stop` clears the queue and silences the current sentence.
  *
  * While it talks, and only if this browser asked for it, a recogniser listens
- * for a stop command (see `isStopCommand`): the whole utterance has to be
- * «para», «basta», «ya entendí»… and it needs headphones, or the chat would
- * hear itself.
+ * for a whole spoken command: a stop («para», «stop»…) silences it, and a
+ * request for more or less detail or a repeat silences it and is handed to
+ * `onCommand`, which sends it. It listens in the language of the browser, like
+ * the dictation, and it needs headphones, or the chat would hear itself.
  */
-export function useSpeech({ lang = 'es' } = {}) {
+export function useSpeech({ onCommand = null } = {}) {
+  const commandRef = useRef(onCommand);
+  commandRef.current = onCommand;
   const [speaking, setSpeaking] = useState(false);
   const queue = useRef([]);
   const alive = useRef(true);
@@ -60,14 +71,17 @@ export function useSpeech({ lang = 'es' } = {}) {
   const listenForStop = useCallback(() => {
     if (listener.current || !readVoiceListen() || !dictationSupport().ok) return;
     const rec = new Recognition();
-    rec.lang = lang === 'es' ? 'es-ES' : (navigator.language || 'es-ES');
+    rec.lang = recognitionLang();
     rec.continuous = true;
     rec.interimResults = false;   // finals only: a half-heard fragment of the chat's own voice proves nothing
     const entry = { rec, release: () => { if (listener.current === entry) listener.current = null; } };
     rec.onresult = (event) => {
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const r = event.results[i];
-        if (r.isFinal && isStopCommand(r[0]?.transcript)) { stop(); return; }
+        if (!r.isFinal) continue;
+        const heard = r[0]?.transcript;
+        if (isStopCommand(heard)) { stop(); return; }
+        if (detailCommand(heard)) { stop(); commandRef.current?.(String(heard).trim()); return; }
       }
     };
     // A recogniser ends by itself after a silence: while the chat is still
@@ -81,28 +95,29 @@ export function useSpeech({ lang = 'es' } = {}) {
     listener.current = entry;
     takeMic(entry);
     try { rec.start(); } catch { listener.current = null; dropMic(entry); }
-  }, [lang, stop]);
+  }, [stop]);
 
   const next = useCallback(() => {
     if (!speechSupport()) return;
-    const text = queue.current.shift();
-    if (text === undefined) {
+    const item = queue.current.shift();
+    if (item === undefined) {
       stopListening();
       if (alive.current) setSpeaking(false);
       return;
     }
-    const utterance = new window.SpeechSynthesisUtterance(text);
-    const voice = pickVoice(window.speechSynthesis.getVoices(), readVoiceName(), lang);
-    if (voice) { utterance.voice = voice; utterance.lang = voice.lang; } else utterance.lang = lang === 'es' ? 'es-ES' : lang;
+    const utterance = new window.SpeechSynthesisUtterance(item.text);
+    const voice = pickVoice(window.speechSynthesis.getVoices(), readVoiceName(), item.lang);
+    if (voice) { utterance.voice = voice; utterance.lang = voice.lang; } else if (item.lang) utterance.lang = BCP47[item.lang] ?? item.lang;
     utterance.rate = readVoiceRate();
     utterance.onend = next;
     utterance.onerror = () => { if (queue.current.length) next(); else if (alive.current) setSpeaking(false); };
     window.speechSynthesis.speak(utterance);
-  }, [lang, stopListening]);
+  }, [stopListening]);
 
   const speak = useCallback((blocks) => {
     if (!speechSupport()) return;
-    const parts = toUtterances(blocks);
+    // A summary the detection cannot place is read in the browser's language.
+    const parts = toUtterances(blocks, recognitionLang().slice(0, 2).toLowerCase());
     if (!parts.length) return;
     const idle = !queue.current.length && !window.speechSynthesis.speaking;
     queue.current.push(...parts);

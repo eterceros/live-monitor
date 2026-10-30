@@ -8,7 +8,7 @@ import { sameTask } from '../taskKey.js';
 import { latestPhaseModel, modelEffortLabel, meta } from '../status.js';
 import { useDictation, dictationSupport, useStopDictationOnEscape } from '../useDictation.js';
 import { useSpeech, speechSupport } from '../useSpeech.js';
-import { splitVoice } from '../voice.js';
+import { detailCommand, splitVoice } from '../voice.js';
 import { onVoicePrefsChange, readVoiceOn, writeVoiceOn } from '../voicePrefs.js';
 import { useComposerHeight } from '../useComposerHeight.js';
 import Icon from './Icon.jsx';
@@ -300,7 +300,10 @@ export default function ChatPanel({
   // The voice of this chat, a choice of this browser (see voicePrefs.js): the
   // chat reads aloud the `<voz>` summaries of its replies, and what is sent
   // while it is on carries the voice rule for that turn.
-  const speech = useSpeech();
+  // A spoken «más detalle» while the chat talks is sent as it is, in voice mode.
+  const speech = useSpeech({
+    onCommand: (words) => { if (chat && ready) onSend(chat.id, words, [], { voice: voiceOnRef.current && speechSupport() }); },
+  });
   const voiceSupported = speechSupport();
   const [voiceOn, setVoiceOn] = useState(() => readVoiceOn(chat?.id));
   const voiceOnRef = useRef(voiceOn);
@@ -462,6 +465,14 @@ export default function ChatPanel({
       scope: 'task',
     };
   })();
+  // Dictating «más detalle» and nothing else: when the dictation ends the box is
+  // sent by itself, so the answer can be asked for without reaching for Enviar.
+  // Anything but a whole command is left for you to send.
+  const wasListening = useRef(false);
+  useEffect(() => {
+    if (wasListening.current && !dictation.listening && detailCommand(text) && ready && !sending && !files.length) send();
+    wasListening.current = dictation.listening;
+  }, [dictation.listening]);
   const canSend = Boolean((text.trim() || files.length) && ready && !sending);
   // A disabled button says why, as the artboard's «Escribe algo para enviar».
   const sendTitle = canSend ? undefined : !ready ? t.chat.panel.sendNoWorktree : t.chat.panel.sendEmpty;
