@@ -7,6 +7,9 @@ import {
 import { sameTask } from '../taskKey.js';
 import { latestPhaseModel, modelEffortLabel, meta } from '../status.js';
 import { useDictation, dictationSupport } from '../useDictation.js';
+import { useSpeech, speechSupport } from '../useSpeech.js';
+import { splitVoice } from '../voice.js';
+import { onVoicePrefsChange, readVoiceOn, writeVoiceOn } from '../voicePrefs.js';
 import { useComposerHeight } from '../useComposerHeight.js';
 import Icon from './Icon.jsx';
 import Pill from './ui/Pill.jsx';
@@ -263,6 +266,35 @@ export default function ChatPanel({
   const fileInput = useRef(null);
   const dictation = useDictation({ onText: setText });
   const micSupport = dictationSupport();
+  // The voice of this chat, a choice of this browser (see voicePrefs.js): the
+  // chat reads aloud the `<voz>` summaries of its replies, and what is sent
+  // while it is on carries the voice rule for that turn.
+  const speech = useSpeech();
+  const voiceSupported = speechSupport();
+  const [voiceOn, setVoiceOn] = useState(() => readVoiceOn(chat?.id));
+  const voiceOnRef = useRef(voiceOn);
+  voiceOnRef.current = voiceOn;
+  const speechRef = useRef(speech);
+  speechRef.current = speech;
+  useEffect(() => {
+    setVoiceOn(readVoiceOn(chat?.id));
+    return onVoicePrefsChange(() => setVoiceOn(readVoiceOn(chat?.id)));
+  }, [chat?.id]);
+  // A voice must not carry over to the next tab, nor outlive the panel.
+  useEffect(() => () => speechRef.current.stop(), [chat?.id]);
+  const toggleVoice = () => {
+    const on = !voiceOn;
+    writeVoiceOn(chat?.id, on);
+    setVoiceOn(on);
+    if (!on) speech.stop();
+  };
+  // Esc silences it at once, from wherever the focus is.
+  useEffect(() => {
+    if (!speech.speaking) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') speechRef.current.stop(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [speech.speaking]);
   // The composer follows its text until you drag its grip. It measures itself
   // against the thread, so it reuses `scrollRef` instead of a second ref.
   const composer = useComposerHeight({ value: text, messagesRef: scrollRef });
@@ -287,7 +319,14 @@ export default function ChatPanel({
     const onChat = (ev) => {
       // Filtrar por chat además de por tarea: sin esto, lo que responde una
       // pestaña aparece en la que estés mirando.
-      if (mine(ev)) setMessages((prev) => [...prev, ev.detail.message]);
+      if (!mine(ev)) return;
+      setMessages((prev) => [...prev, ev.detail.message]);
+      // Only a message that arrives now is read: loading a chat never speaks its history.
+      const said = ev.detail.message;
+      if (voiceOnRef.current && said?.role === 'assistant') {
+        const { spoken } = splitVoice(said.text);
+        if (spoken.length) speechRef.current.speak(spoken);
+      }
     };
     const onUpdate = (ev) => {
       if (mine(ev)) setMessages((prev) => applyUpdate(prev, ev.detail));
@@ -369,7 +408,7 @@ export default function ChatPanel({
       for (const f of files) {
         uploaded.push(await api.uploadAttachment(task, { name: f.name, dataBase64: f.dataBase64 }));
       }
-      onSend(chat.id, body || t.chat.panel.defaultPrompt, uploaded);
+      onSend(chat.id, body || t.chat.panel.defaultPrompt, uploaded, { voice: voiceOn && voiceSupported });
       setText('');
       setFiles([]);
     } catch (e) {
@@ -821,6 +860,17 @@ export default function ChatPanel({
               disabled={!ready}
               onToggle={() => dictation.toggle(text)}
             />
+            {voiceSupported && (
+              <button type="button" className={`btn btn-icon btn-sm cp-tool speaker${voiceOn ? ' on' : ''}`} disabled={!ready}
+                aria-pressed={voiceOn} aria-label={voiceOn ? t.chat.panel.voiceOff : t.chat.panel.voiceOn}
+                title={voiceOn ? t.chat.panel.voiceOffTitle : t.chat.panel.voiceOnTitle}
+                onClick={toggleVoice}><Icon name={voiceOn ? 'volume' : 'volume-off'} /></button>
+            )}
+            {speech.speaking && (
+              <button type="button" className="btn btn-icon btn-sm cp-tool speaker-stop"
+                aria-label={t.chat.panel.voiceStop} title={t.chat.panel.voiceStopTitle}
+                onClick={speech.stop}><Icon name="stop" /></button>
+            )}
             <span className="cp-hint">{t.chat.panel.keysHint}</span>
             <button type="button" className="btn btn-primary cp-send" onClick={send} disabled={!canSend} title={sendTitle}>
               {sending ? t.chat.panel.uploading : <><Icon name="arrow-up" /> <span>{t.chat.panel.send}</span></>}

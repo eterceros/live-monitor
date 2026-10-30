@@ -457,6 +457,19 @@
 .mic.listening { background: var(--tint-danger); color: var(--red); }
 .dictation-error { margin: 6px 14px 0; font-size: var(--fs-sm); color: var(--amber); }
 
+/* Voice of the chat: the speaker is lit while it is on, and the summary the
+   voice reads is shown apart from the rest of the reply, with what it is. */
+.speaker.on { color: var(--accent); }
+.cb-voice {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-3);
+  border-radius: 0 6px 6px 0;
+}
+.cb-voice-tag { font-size: var(--fs-sm); font-weight: 600; color: var(--accent); margin-right: 4px; white-space: nowrap; }
+.cb-voice-tag svg { vertical-align: -2px; }
+
 /* ---- Touch and phone ------------------------------------------------------- */
 @media (hover: none) {
   .chat-tab .chat-tab-close { opacity: 1; }

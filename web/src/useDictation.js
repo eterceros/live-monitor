@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { fill, strings } from './i18n/index.js';
 
-const Recognition = typeof window !== 'undefined'
+export const Recognition = typeof window !== 'undefined'
   && (window.SpeechRecognition || window.webkitSpeechRecognition);
 
 /**
@@ -37,7 +37,7 @@ export const dictationSupport = () => {
  */
 let live = null;                       // { rec, release }
 
-const takeMic = (entry) => {
+export const takeMic = (entry) => {
   const prev = live;
   live = entry;
   if (prev && prev !== entry) {
@@ -46,7 +46,7 @@ const takeMic = (entry) => {
   }
 };
 
-const dropMic = (entry) => { if (live === entry) live = null; };
+export const dropMic = (entry) => { if (live === entry) live = null; };
 
 /**
  * Dictates into a text field: keeps whatever was typed before as a prefix and

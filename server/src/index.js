@@ -1822,7 +1822,7 @@ wss.on('connection', (socket, request) => {
       if (msg.type === 'chat' && msg.owner === 'project' && typeof msg.machine === 'string') {
         if (typeof msg.text !== 'string' || !msg.text.trim()) return;
         if (typeof msg.project !== 'string' || !holderExists(msg.project, msg.machine)) return;
-        Promise.resolve(sendChat(holderKey(msg.project, msg.machine), msg.chatId ?? null, msg.text.trim(), acceptedAttachments(msg.attachments)))
+        Promise.resolve(sendChat(holderKey(msg.project, msg.machine), msg.chatId ?? null, msg.text.trim(), acceptedAttachments(msg.attachments), { voice: msg.voice === true }))
           .catch((e) => socket.send(JSON.stringify({ type: 'error', error: e.message })));
         return;
       }
@@ -1832,7 +1832,7 @@ wss.on('connection', (socket, request) => {
         // than sent to whatever task the bare number happens to name.
         const key = coerceKey(msg.issue, msg.project ?? DEFAULT_PROJECT_ID); // allowlisted: legacy ws clients send a bare issue number
         if (!key) return;
-        sendChat(key, msg.chatId ?? null, msg.text.trim(), acceptedAttachments(msg.attachments));
+        sendChat(key, msg.chatId ?? null, msg.text.trim(), acceptedAttachments(msg.attachments), { voice: msg.voice === true });
       }
     } catch (e) {
       socket.send(JSON.stringify({ type: 'error', error: e.message }));

@@ -8,6 +8,11 @@ import RequiredPluginsDialog from '../RequiredPluginsDialog.jsx';
 import { usePlugins } from '../../usePlugins.js';
 import { DUO_OPTIONS, TRI_OPTIONS, projectTriState, triToProject } from '../../settingState.js';
 import { HOVER_DELAY_OPTIONS, onHoverDelayChange, readHoverDelay, writeHoverDelay } from '../../cardHover.js';
+import {
+  RATE_OPTIONS, onVoicePrefsChange, readVoiceDefault, readVoiceListen, readVoiceName, readVoiceRate,
+  writeVoiceDefault, writeVoiceListen, writeVoiceName, writeVoiceRate,
+} from '../../voicePrefs.js';
+import { listVoices, speechSupport } from '../../useSpeech.js';
 import { useStrings, useLocale } from '../../i18n/useStrings.js';
 import { LOCALES, fill, plural, setLocale, splitAround, strings } from '../../i18n/index.js';
 
@@ -59,6 +64,22 @@ function useHoverDelay() {
   const [ms, setMs] = useState(readHoverDelay);
   useEffect(() => onHoverDelayChange(() => setMs(readHoverDelay())), []);
   return ms;
+}
+
+/** The voice preferences of this browser, live: this menu and the chats follow the same event. */
+function useVoicePrefs() {
+  const read = () => ({ name: readVoiceName(), rate: readVoiceRate(), isDefault: readVoiceDefault(), listen: readVoiceListen() });
+  const [prefs, setPrefs] = useState(read);
+  const [voices, setVoices] = useState(() => listVoices());
+  useEffect(() => onVoicePrefsChange(() => setPrefs(read())), []);
+  // A browser loads its voices a moment after the page: the list is asked again when it says so.
+  useEffect(() => {
+    if (!speechSupport()) return undefined;
+    const again = () => setVoices(listVoices());
+    window.speechSynthesis.addEventListener('voiceschanged', again);
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', again);
+  }, []);
+  return { ...prefs, voices };
 }
 
 /** «1 plugin · falta en runner-1», or «N requeridos · todo instalado». */
@@ -114,6 +135,7 @@ export default function SettingsMenu({
   ) : null);
 
   const hoverMs = useHoverDelay();
+  const voice = useVoicePrefs();
   const gitSecs = eff('gitRefreshSeconds') ?? 300;
   const plugins = pluginsSummary(t, state, chips);
   const maxTasks = settings.maxActiveTasks;
@@ -241,6 +263,44 @@ export default function SettingsMenu({
                 options={HOVER_DELAY_OPTIONS.map((ms) => ({ value: ms, label: hoverLabel(t, ms) }))}
                 onChange={writeHoverDelay} />
             </SettingRow>
+
+            {speechSupport() && (
+              <>
+                <SettingRow layout="inline" icon="volume" name={<Named name={t.topbar.settings.voiceName} sub={voice.name || t.topbar.settings.voiceAuto} />}
+                  title={t.topbar.settings.voiceTitle}>
+                  <span className="sm-inline">
+                    <span className="sm-select">
+                      <select aria-label={t.topbar.settings.voiceName} value={voice.name} onChange={(e) => writeVoiceName(e.target.value)}>
+                        <option value="">{t.topbar.settings.voiceAuto}</option>
+                        {voice.voices.map((v) => <option key={v.name} value={v.name}>{v.name}</option>)}
+                      </select>
+                      <Icon name="chevron-down" />
+                    </span>
+                  </span>
+                </SettingRow>
+                <SettingRow layout="inline" icon="timer" name={<Named name={t.topbar.settings.rateName} sub={`${voice.rate}×`} />} // i18n-ok: a speed multiplier
+                  title={t.topbar.settings.rateTitle}>
+                  <span className="sm-inline">
+                    <span className="sm-select">
+                      <select aria-label={t.topbar.settings.rateName} value={voice.rate} onChange={(e) => writeVoiceRate(Number(e.target.value))}>
+                        {RATE_OPTIONS.map((r) => <option key={r} value={r}>{r}×{/* i18n-ok: a speed multiplier */}</option>)}
+                      </select>
+                      <Icon name="chevron-down" />
+                    </span>
+                  </span>
+                </SettingRow>
+                <SettingRow layout="inline" icon="volume" name={t.topbar.settings.voiceDefaultName} title={t.topbar.settings.voiceDefaultTitle}
+                  effective={voice.isDefault} source={t.topbar.settings.voiceSource}>
+                  <StateButton on={voice.isDefault} name={t.topbar.settings.voiceDefaultName} title={t.topbar.settings.voiceDefaultTitle}
+                    onToggle={() => writeVoiceDefault(!voice.isDefault)} />
+                </SettingRow>
+                <SettingRow layout="inline" icon="mic" name={t.topbar.settings.voiceListenName} title={t.topbar.settings.voiceListenTitle}
+                  effective={voice.listen} source={t.topbar.settings.voiceSource}>
+                  <StateButton on={voice.listen} name={t.topbar.settings.voiceListenName} title={t.topbar.settings.voiceListenTitle}
+                    onToggle={() => writeVoiceListen(!voice.listen)} />
+                </SettingRow>
+              </>
+            )}
 
             <button type="button" className="sm-plugins" aria-haspopup="dialog" title={t.topbar.settings.pluginsTitle}
               onClick={() => { pop.close(); setPluginsOpen(true); }}>

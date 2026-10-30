@@ -326,8 +326,8 @@ export function drainNews(chat) {
  * for the turn that follows. `messageId` is the bubble it came from, so the
  * panel can say which of the two ways it took.
  */
-export function leaveNote(chat, text, messageId, attachments = []) {
-  chat.notes = [...(chat.notes ?? []), { text, messageId, attachments }];
+export function leaveNote(chat, text, messageId, attachments = [], { voice = false } = {}) {
+  chat.notes = [...(chat.notes ?? []), { text, messageId, attachments, ...(voice ? { voice: true } : {}) }];
 }
 
 /** Takes the notes waiting on a chat, and empties them. */
