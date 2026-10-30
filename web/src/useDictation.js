@@ -12,6 +12,9 @@ export const Recognition = typeof window !== 'undefined'
  * localhost but not over plain http from the phone — `isSecureContext` is what
  * the button uses to explain itself instead of failing silently.
  */
+/** The language the microphone listens in: the browser's own, for the dictation and the voice commands alike. */
+export const recognitionLang = () => (typeof navigator !== 'undefined' && navigator.language) || 'es-ES';
+
 export const dictationSupport = () => {
   if (!Recognition) return { ok: false, reason: strings().app.dictation.unsupported };
   if (!window.isSecureContext) {
@@ -89,7 +92,7 @@ export function useDictation({ onText, lang }) {
     if (!support.ok) { setError({ key: 'support' }); return; }
 
     const rec = new Recognition();
-    rec.lang = lang || navigator.language || 'es-ES';
+    rec.lang = lang || recognitionLang();
     rec.continuous = true;      // dictating a prompt, not a single command
     rec.interimResults = true;  // show words as they land
 

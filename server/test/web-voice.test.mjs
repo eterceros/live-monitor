@@ -7,7 +7,8 @@ import { readFileSync } from 'node:fs';
 // browser (localStorage); the wiring is checked against the sources, like the
 // other web tests here.
 
-const { splitVoice, speakable, sentences, isStopCommand, normalizeSpoken, toUtterances } = await import('../../web/src/voice.js');
+const { splitVoice, speakable, sentences, isStopCommand, detailCommand, detectLang, normalizeSpoken, toUtterances } = await import('../../web/src/voice.js');
+const { pickVoice } = await import('../../web/src/useSpeech.js');
 
 const store = new Map();
 globalThis.localStorage = {
@@ -41,7 +42,7 @@ test('sentences: trozos cortos que el navegador no corta, y nunca partidos a med
   assert.ok(parts.every((p) => p.length <= 100));
   assert.equal(parts.join(' ').replace(/\s+/g, ' '), long.replace(/\s+/g, ' '));
   assert.deepEqual(sentences('Una. Dos! ¿Tres?'), ['Una.', 'Dos!', '¿Tres?']);
-  assert.deepEqual(toUtterances(['**Hola.** Adiós.']), ['Hola.', 'Adiós.']);
+  assert.deepEqual(toUtterances(['**Hola.** Adiós.']).map((u) => u.text), ['Hola.', 'Adiós.']);
 });
 
 test('isStopCommand: la frase ENTERA tiene que ser una orden de callar', () => {
@@ -120,4 +121,66 @@ test('los ajustes de voz solo salen si el navegador sabe hablar, sin tocar los c
   assert.equal((menu.match(/<SegmentedControl/g) ?? []).length, 3, 'la velocidad y la voz son desplegables, no un cuarto control segmentado');
   assert.match(menu, /writeVoiceDefault\(!voice\.isDefault\)/);
   assert.match(menu, /writeVoiceListen\(!voice\.listen\)/);
+});
+
+test('isStopCommand: las órdenes de callar valen en los cuatro idiomas, y siempre enteras', () => {
+  for (const ok of ['stop', 'enough', 'That\'s enough', 'got it', 'okay stop', 'arrête', 'ça suffit', 'j\'ai compris', 'stopp', 'genug', 'verstanden', 'es reicht']) {
+    assert.equal(isStopCommand(ok), true, ok);
+  }
+  for (const no of ['enough already', 'stop the server', 'je pense que ça suffit pour aujourd\'hui', 'genug Zeit']) {
+    assert.equal(isStopCommand(no), false, no);
+  }
+});
+
+test('detailCommand: más, menos o repetir, enteros y en cuatro idiomas', () => {
+  assert.equal(detailCommand('Más detalle.'), 'more');
+  assert.equal(detailCommand('dame más detalles'), 'more');
+  assert.equal(detailCommand('More detail'), 'more');
+  assert.equal(detailCommand('plus de détails'), 'more');
+  assert.equal(detailCommand('Mehr Details'), 'more');
+  assert.equal(detailCommand('menos detalle'), 'less');
+  assert.equal(detailCommand('less detail'), 'less');
+  assert.equal(detailCommand('moins de détails'), 'less');
+  assert.equal(detailCommand('weniger Details'), 'less');
+  assert.equal(detailCommand('repítelo'), 'repeat');
+  assert.equal(detailCommand('repeat that'), 'repeat');
+  assert.equal(detailCommand('répète'), 'repeat');
+  assert.equal(detailCommand('wiederhole das'), 'repeat');
+  // Una frase que solo CONTIENE la orden es una pregunta, no la orden.
+  for (const no of ['quiero más detalle del segundo punto', 'more detail about the tests', 'hola', '', null]) {
+    assert.equal(detailCommand(no), null, String(no));
+  }
+});
+
+test('detectLang: el idioma de un resumen corto, o nada si no se puede decir', () => {
+  assert.equal(detectLang('Encontré el fallo. Ya lo arreglé y pasan los tests.'), 'es');
+  assert.equal(detectLang('I found the bug and fixed it, and all the tests pass.'), 'en');
+  assert.equal(detectLang('J’ai trouvé le bug et je l’ai corrigé, tout passe.'), 'fr');
+  assert.equal(detectLang('Ich habe den Fehler gefunden und behoben.'), 'de');
+  assert.equal(detectLang('ok'), null, 'demasiado corto');
+  assert.equal(detectLang(''), null);
+  const mixed = toUtterances(['Encontré el fallo y lo arreglé.', 'I fixed it and all the tests pass.'], 'es');
+  assert.deepEqual(mixed.map((u) => u.lang), ['es', 'en'], 'cada bloque con su idioma');
+  assert.equal(toUtterances(['ok'], 'fr')[0].lang, 'fr', 'sin idioma claro, el del navegador');
+});
+
+test('pickVoice: la voz elegida solo se usa si habla el idioma del texto', () => {
+  const voices = [
+    { name: 'Voz A', lang: 'es-ES' }, { name: 'Voz B', lang: 'es-MX' }, { name: 'Voice C', lang: 'en-US' }, { name: 'Voix D', lang: 'fr-FR' },
+  ];
+  assert.equal(pickVoice(voices, 'Voz B', 'es').name, 'Voz B', 'la elegida y del mismo idioma');
+  assert.equal(pickVoice(voices, 'Voz B', 'en').name, 'Voice C', 'leyendo inglés no se usa una voz española');
+  assert.equal(pickVoice(voices, '', 'fr').name, 'Voix D', 'sin elección, la primera del idioma');
+  assert.equal(pickVoice(voices, 'Voz A', null).name, 'Voz A', 'sin idioma conocido se respeta la elección');
+  assert.equal(pickVoice(voices, '', 'de'), null, 'sin voz de ese idioma, decide el navegador');
+});
+
+test('el cableado: el micrófono de las órdenes escucha en el idioma del navegador, y lo dictado entero se envía solo', () => {
+  const speech = src('useSpeech.js');
+  assert.match(speech, /rec\.lang = recognitionLang\(\);/, 'el mismo idioma que el dictado, no uno fijo');
+  assert.match(src('useDictation.js'), /rec\.lang = lang \|\| recognitionLang\(\);/);
+  assert.match(speech, /if \(detailCommand\(heard\)\) \{ stop\(\); commandRef\.current\?\.\(String\(heard\)\.trim\(\)\); return; \}/);
+  const panel = src('components/ChatPanel.jsx');
+  assert.match(panel, /onCommand: \(words\) => \{ if \(chat && ready\) onSend\(chat\.id, words, \[\], \{ voice: voiceOnRef\.current && speechSupport\(\) \}\)/);
+  assert.match(panel, /wasListening\.current && !dictation\.listening && detailCommand\(text\) && ready && !sending && !files\.length\) send\(\)/);
 });
