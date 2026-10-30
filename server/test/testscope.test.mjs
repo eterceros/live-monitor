@@ -76,3 +76,15 @@ test('fullTests: apagado de serie, la tarjata nace del proyecto y auto sigue al 
   assert.equal(settings.fullTestsFor('p'), false);
   assert.ok(store);
 });
+
+test('config.example.hfs.json: clippy corre antes que los tests y solo de los crates tocados', async () => {
+  const { readFileSync } = await import('node:fs');
+  const example = JSON.parse(readFileSync(new URL('../../config.example.hfs.json', import.meta.url), 'utf8')).e2e;
+  const plan = planScopes(example, ['crates/persistence/src/lib.rs', 'crates/sof/Cargo.toml'], { base: 'main' });
+  assert.deepEqual(plan.covered, ['rust-clippy', 'rust'], 'clippy primero: si hay avisos falla antes de gastar tiempo en los tests');
+  assert.match(plan.runs[0].command, /^cargo clippy -p helios-persistence -p helios-sof --all-targets --all-features -- -D warnings /);
+  assert.match(plan.runs[0].command, /-A clippy::doc-lazy-continuation$/, 'lleva la lista de permitidos de CONTRIBUTING.md completa');
+  assert.equal(plan.runs[1].command, 'cargo test -p helios-persistence -p helios-sof');
+  assert.ok(plan.runs.every((r) => r.browser === false), 'ninguno necesita navegador');
+  assert.deepEqual(planScopes(example, ['README.md'], {}).runs, [], 'sin Rust tocado no corre ni clippy');
+});

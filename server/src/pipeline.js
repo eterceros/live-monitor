@@ -4829,9 +4829,12 @@ async function testPhase(task, { machine = machineOf(task) } = {}) {
           const testCommand = full && workers > 1 ? `${base} --workers=${workers}` : base;
           const cwd = full ? e2eCwd : run.cwd ? machine.path.join(task.worktreePath, run.cwd) : task.worktreePath;
           store.addLog(task, 'e2e', `running${full ? '' : ` [${run.name}]`}: ${testCommand} (attempt ${attempt})`);
+          const startedRun = Date.now();
           const r = await machine.shell(testCommand, {
             cwd, timeoutMs, env, onLine: (l) => store.addLog(task, 'e2e', l),
           });
+          // One line per run with its verdict and time: what a scope costs, and which one stopped the phase.
+          store.addLog(task, 'e2e', `[${run.name}] ${r.ok ? 'passed' : 'FAILED'} in ${Math.round((Date.now() - startedRun) / 1000)} s (attempt ${attempt})`);
           if (!r.ok) return { ok: false, tail: `${full ? '' : `[${run.name}]\n`}${(r.stdout + '\n' + r.stderr).slice(-6000)}` };
         }
         return { ok: true, tail: '' };
