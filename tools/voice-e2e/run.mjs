@@ -4,7 +4,7 @@
  *
  * Usage
  * -----
- *   node tools/voice-e2e/run.mjs [--playwright <path>] [--out <dir>] [--keep]
+ *   node tools/voice-e2e/run.mjs [--playwright <path>] [--out <dir>] [--keep] [--mobile]
  *
  *   --playwright  the `@playwright/test` package to drive the browser with
  *                 (default: `$E2E_PLAYWRIGHT`, this repo's own if it has one, or
@@ -12,6 +12,7 @@
  *   --out         where the screenshots and `results.json` go (default:
  *                 `hfsmon-voice-e2e-last` in the temp directory, printed at the end).
  *   --keep        leave the throwaway data and config folder in place.
+ *   --mobile      the size and touch of a phone, and only the checks that matter there.
  *
  * What it does: a data folder and a config of its own in the temp directory, one
  * seeded task with a chat, this checkout's board on a free port (never the live
@@ -118,7 +119,7 @@ try {
   const result = await new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(HERE, 'voice.e2e.mjs')], {
       cwd: HERE, stdio: 'inherit',
-      env: { ...env, E2E_PLAYWRIGHT: playwright, E2E_URL: url, E2E_CHAT_ID: chatId, E2E_OUT: out },
+      env: { ...env, E2E_PLAYWRIGHT: playwright, E2E_URL: url, E2E_CHAT_ID: chatId, E2E_OUT: out, E2E_MOBILE: flag('--mobile') ? '1' : '0' },
     });
     child.on('close', resolve);
   });

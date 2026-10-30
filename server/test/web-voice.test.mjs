@@ -184,3 +184,12 @@ test('el cableado: el micrófono de las órdenes escucha en el idioma del navega
   assert.match(panel, /onCommand: \(words\) => \{ if \(chat && ready\) onSend\(chat\.id, words, \[\], \{ voice: voiceOnRef\.current && speechSupport\(\) \}\)/);
   assert.match(panel, /wasListening\.current && !dictation\.listening && detailCommand\(text\) && ready && !sending && !files\.length\) send\(\)/);
 });
+
+test('el toque que enciende el altavoz y el que envía desbloquean la voz del móvil', () => {
+  const speech = src('useSpeech.js');
+  assert.match(speech, /export function primeSpeech\(\)/);
+  assert.match(speech, /word\.volume = 0;/, 'una palabra en silencio: no se oye nada');
+  const panel = src('components/ChatPanel.jsx');
+  assert.match(panel, /else primeSpeech\(\);/, 'al encenderlo');
+  assert.match(panel, /if \(voiceOn && voiceSupported\) primeSpeech\(\);/, 'al enviar con la voz encendida');
+});
