@@ -42,8 +42,14 @@ await page.addInitScript(() => {
     cancel() { window.__cancels += 1; synth.speaking = false; },
   };
   Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true });
-  // A recogniser that never hears anything: enough for the support checks.
-  window.webkitSpeechRecognition = function Rec() { this.start = () => {}; this.stop = () => {}; this.abort = () => {}; };
+  // A recogniser the test speaks through: `window.__recs.at(-1)` is the live one.
+  window.__recs = [];
+  window.webkitSpeechRecognition = function Rec() {
+    this.start = () => { this.started = true; };
+    this.stop = () => { this.stopped = true; setTimeout(() => this.onend?.(), 0); };
+    this.abort = () => { this.aborted = true; setTimeout(() => this.onend?.(), 0); };
+    window.__recs.push(this);
+  };
 });
 
 // Everything the browser sends to the board is recorded; chat messages are NOT
@@ -129,6 +135,48 @@ await page.locator('button.tcw-chat').first().click();
 await page.waitForSelector('button.speaker', { timeout: 15000 });
 check('tras recargar sigue encendido', (await page.locator('button.speaker').getAttribute('aria-pressed')) === 'true');
 await page.screenshot({ path: path.join(OUT, '04-after-reload.png') });
+
+// What is dictated, typed and cleared in the box.
+const box = page.locator('textarea').first();
+const mic = page.locator('button.mic').first();
+const say = (words) => page.evaluate((w) => window.__recs.at(-1).onresult({ resultIndex: 0, results: [[{ transcript: w }]] }), words);
+await box.fill('');
+check('con la caja vacía no hay ✕', (await page.locator('button.cp-clear').count()) === 0);
+
+await mic.click();
+await say('hola mundo');
+check('el dictado llega a la caja', (await box.inputValue()) === 'hola mundo', await box.inputValue());
+check('con texto aparece la ✕', (await page.locator('button.cp-clear').count()) === 1);
+await box.focus();
+await page.keyboard.press('Escape');
+await page.waitForTimeout(150);
+check('Esc deja de grabar', (await mic.getAttribute('aria-pressed')) === 'false');
+check('Esc conserva lo dictado', (await box.inputValue()) === 'hola mundo', await box.inputValue());
+
+await mic.click();
+await say('segunda parte');
+await box.focus();
+await page.keyboard.press('x');
+await page.waitForTimeout(150);
+check('teclear sobre un dictado corta el micrófono', (await mic.getAttribute('aria-pressed')) === 'false'
+  && (await page.evaluate(() => window.__recs.at(-1).aborted === true)));
+const typed = await box.inputValue();
+check('lo tecleado no se pisa', typed.includes('x') && typed.startsWith('hola mundo'), typed);
+
+await page.screenshot({ path: path.join(OUT, '06-with-clear-button.png') });
+await page.locator('button.cp-clear').click();
+check('la ✕ vacía la caja', (await box.inputValue()) === '');
+check('ofrece deshacer', (await page.locator('.cp-undo button').count()) === 1);
+await page.screenshot({ path: path.join(OUT, '06-cleared-undo.png') });
+await page.locator('.cp-undo button').click();
+check('deshacer devuelve lo borrado', (await box.inputValue()) === typed && (await page.locator('.cp-undo').count()) === 0, await box.inputValue());
+
+await mic.click();
+await page.locator('button.cp-clear').click();
+check('la ✕ también corta un dictado en curso', (await mic.getAttribute('aria-pressed')) === 'false'
+  && (await box.inputValue()) === ''
+  && (await page.evaluate(() => window.__recs.at(-1).aborted === true)));
+check('sin texto y sin dictado desaparece la ✕', (await page.locator('button.cp-clear').count()) === 0);
 
 // Turning it off: sends without the mark and stops speaking.
 await page.locator('button.speaker').click();
