@@ -43,7 +43,9 @@ test('answers read «header → answer»', () => {
 });
 
 test('only Claude is rendered as Markdown, and you sit in a neutral bubble', () => {
-  assert.match(src, /m\.role === 'assistant' \? <Markdown text=\{m\.text\} \/> : m\.text/);
+  // Claude's `<voz>` summaries come out first (see voice.js); what is left is still Markdown, and yours stays plain.
+  assert.match(src, /voice \? \(voice\.text \? <Markdown text=\{voice\.text\} \/> : null\) : m\.text/);
+  assert.match(src, /const voice = m\.role === 'assistant' \? splitVoice\(m\.text\) : null/);
   assert.equal((src.match(/<Markdown /g) ?? []).length, 1);
   assert.match(css, /\.cb-user \{[^}]*background: var\(--surface-3\)/);
   assert.doesNotMatch(css, /tint-live|info-border/, 'cyan is for what is live, not for your messages');

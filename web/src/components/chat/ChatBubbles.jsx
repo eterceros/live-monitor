@@ -2,6 +2,7 @@ import React from 'react';
 import { api } from '../../api.js';
 import Icon from '../Icon.jsx';
 import Markdown from '../Markdown.jsx';
+import { splitVoice } from '../../voice.js';
 import Stamp from '../Stamp.jsx';
 import LiveDot from '../ui/LiveDot.jsx';
 import { laneSummary } from '../PlanReview.jsx';
@@ -137,6 +138,8 @@ export function PendingBubble({ message: m, pending, onOpen }) {
 export function MessageBubble({ m }) {
   const t = useStrings();
   const mine = m.role === 'user';
+  // Claude's `<voz>` summaries (see voice.js) come out of the text and are shown apart.
+  const voice = m.role === 'assistant' ? splitVoice(m.text) : null;
   return (
     <div className={`cb-msg${mine ? ' cb-msg--user' : ''}`}>
       <Who name={mine ? t.chat.bubbles.you : 'Claude'} ts={m.ts} />{/* i18n-ok: a product name */}
@@ -148,7 +151,12 @@ export function MessageBubble({ m }) {
         className={`${mine ? 'cb-user' : 'cb-claude bubble-md'}${m.boardOnly ? ' cb-board-only' : ''}`}
         title={m.boardOnly ? t.chat.bubbles.boardOnlyTitle : undefined}
       >
-        {m.role === 'assistant' ? <Markdown text={m.text} /> : m.text}
+        {voice?.spoken.map((s, i) => (
+          <div key={i} className="cb-voice" role="note">
+            <span className="cb-voice-tag"><Icon name="volume" /> {t.chat.bubbles.spoken}</span> {s}
+          </div>
+        ))}
+        {voice ? (voice.text ? <Markdown text={voice.text} /> : null) : m.text}
         {m.attachments?.length > 0 && (
           <div className="cb-attached">{m.attachments.map((a) => <span key={a}><Icon name="paperclip" /> {a}</span>)}</div>
         )}

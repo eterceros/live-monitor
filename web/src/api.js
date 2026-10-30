@@ -49,11 +49,13 @@ export function connectWs(handlers) {
     // the server composes the key itself (`keys.js`, WebSocket section).
     // `owner` is a task, or a project-chat holder summary: a holder has no
     // issue, it travels as `owner: 'project'` plus its machine.
-    sendChat(owner, chatId, text, attachments = []) {
+    sendChat(owner, chatId, text, attachments = [], { voice = false } = {}) {
       if (socket?.readyState !== WebSocket.OPEN) return;
       const msg = owner.kind === 'project'
         ? { type: 'chat', project: owner.project, owner: 'project', machine: owner.machine, chatId, text, attachments }
         : { type: 'chat', project: owner.project, issue: owner.issue, chatId, text, attachments };
+      // Voice mode is this browser's choice: the board only adds the rule to a message that says so.
+      if (voice) msg.voice = true;
       socket.send(JSON.stringify(msg));
     },
     close() {

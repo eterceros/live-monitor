@@ -8,7 +8,7 @@ import {
   LoaderCircle, Lock, MapPin, Maximize2, Menu, MessageSquare, Mic, Minimize2, Minus, Moon, Palette,
   Paperclip, Pause, Pencil, Pin, Play, Plug, Plus, Puzzle, Recycle, Redo2, RefreshCw, Repeat, Rocket,
   RotateCcw, ScrollText, Search, Server, Settings, SkipForward, SlidersHorizontal, Sprout, Terminal,
-  Timer, Trash2, TreeDeciduous, TriangleAlert, Truck, Undo2, User, Wrench, X, Zap,
+  Timer, Trash2, TreeDeciduous, TriangleAlert, Truck, Undo2, User, Volume2, VolumeX, Wrench, X, Zap,
 } from 'lucide-react';
 
 /*
@@ -192,6 +192,8 @@ const ICONS = {
   maximize: Maximize2,
   brain: Brain,
   mic: Mic,
+  volume: Volume2,
+  'volume-off': VolumeX,
   paperclip: Paperclip,
   key: KeyRound,
   pencil: Pencil,

@@ -1314,8 +1314,8 @@ export default function App() {
                 showChat(id);
               }}
               onClose={() => setChatView(null)}
-              onSend={(chatId, text, attachments) =>
-                wsRef.current?.sendChat(chatTask, chatId, text, attachments)}
+              onSend={(chatId, text, attachments, options) =>
+                wsRef.current?.sendChat(chatTask, chatId, text, attachments, options)}
               onCreateWorktree={(issue) => api.createWorktree(chatTask.project, issue).catch(say)}
               // The board's plan bubble in the chat opens the task's own plan
               // dialog, the same one as the card's «📝 Revisar plan».

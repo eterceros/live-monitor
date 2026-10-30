@@ -50,6 +50,7 @@ import { COLLECT_RULE } from './parallel.js';
 import { ghPublishProblems, ghGateMessage, callsGh, stateChangeProblem } from './ghgate.js';
 import { PHASE_LABEL, normalizePhase, planOfRun } from './phases.js';
 import { hasScopes, planScopes, describePlan } from './testscope.js';
+import { withVoiceRule } from './voice.js';
 import { IDLE_PR_STATES, decide as decideConflict, pickToStart, maxParallelOf, maxAttemptsOf, unsafeConflicts } from './conflicts.js';
 import { choosePrTitle, prTypeFor, PR_TITLE_MAX } from './prtitle.js';
 import { canAutoStart, modeOf, resumeStateFor, keepsForced, newestFirst, SETTABLE_MODES } from './mode.js';
@@ -7643,7 +7644,7 @@ function stopFollowing(live, itemId) {
  * worktree first when the task doesn't have one yet (started elsewhere, or
  * reclaimed for disk).
  */
-export function sendChat(issue, chatId, text, attachments = []) {
+export function sendChat(issue, chatId, text, attachments = [], { voice = false } = {}) {
   const task = chatOwnerOf(issue);
   if (!task) throw new Error(unknownOwner(issue));
   const chat = chatById(task, chatId);
@@ -7702,11 +7703,11 @@ export function sendChat(issue, chatId, text, attachments = []) {
   const planRunning = ['running', 'asking'].includes(chat.plan?.status);
   const lk = liveKey(ownerKeyOf(task), chat.id);
   if (planRunning || starting.has(lk) || (chat.busy && liveChats.get(lk)?.session.alive)) {
-    leaveNote(chat, text, message.id, attachments);
+    leaveNote(chat, text, message.id, attachments, { voice });
     store.updateChat(task, chat, message, { patch: { delivery: 'pending' } });
     return;
   }
-  runTurn(task, chat, text, attachments);
+  runTurn(task, chat, text, attachments, { voice });
 }
 
 /**
@@ -7714,12 +7715,14 @@ export function sendChat(issue, chatId, text, attachments = []) {
  * ride at the front of the next prompt. `text` may be empty: then the notes
  * are the whole prompt.
  */
-function withNotes(task, chat, text, attachments) {
+function withNotes(task, chat, text, attachments, voice = false) {
   const notes = drainNotes(chat);
   for (const note of notes) markDelivery(task, chat, note.messageId, 'next');
   return {
     text: [...notes.map((n) => n.text), text].filter(Boolean).join('\n\n'),
     attachments: [...notes.flatMap((n) => n.attachments ?? []), ...attachments],
+    // A note typed in voice mode makes the turn that carries it a voice turn.
+    voice: voice === true || notes.some((n) => n.voice === true),
   };
 }
 
@@ -7792,6 +7795,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
     return;
   }
   let headBefore = null;
+  let turnVoice = opts.voice === true;   // the browser is reading this chat aloud
   let heal = null;   // what to send again, on a fresh session, when this one was gone
   try {
     // Never build a worktree as a side effect of typing: it is a 17k-file
@@ -7803,7 +7807,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
         + 'Press «🌳 Create worktree» to prepare it and send it again.');
       return;
     }
-    ({ text, attachments } = withNotes(task, chat, text, attachments));
+    ({ text, attachments, voice: turnVoice } = withNotes(task, chat, text, attachments, turnVoice));
     // What the siblings did while this chat was away, worked out now rather
     // than pre-cooked.
     const siblings = await siblingsBriefing(task, chat);
@@ -7872,7 +7876,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
           machineName: machine.name, platform: machine.platform, worktreePath: task.worktreePath, wip: chat.handoff?.wip,
         }),
       });
-    const result = await live.session.send(rules);
+    const result = await live.session.send(withVoiceRule(rules, turnVoice));
     turnStats = result.stats ?? null;
     turnCounts = result.toolCounts ?? null;
     if (!result.ok && /No conversation found/i.test(result.error ?? '')) {
@@ -7889,7 +7893,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       chat.sessionId = null;
       chat.forkPending = false;
       closeLiveSession(ownerKeyOf(task), chat.id);
-      if (!opts.healed) heal = { text, attachments };
+      if (!opts.healed) heal = { text, attachments, voice: turnVoice };
       store.addChat(task, chat.id, 'assistant', opts.healed
         ? '⚠️ The previous conversation no longer exists on this machine and the new session did not start either. Send the message again.'
         : '⚠️ The previous conversation no longer exists on this machine: the chat starts from scratch and the message is resent to a new session.');
@@ -7944,7 +7948,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       : { outcome: turnOutcome, ...chatCallMeta(turnCounts) });
     // Right away, so the chat never looks idle between the two sends. Once:
     // a second "no conversation" on a session with no id is not this problem.
-    if (heal) runTurn(task, chat, heal.text, heal.attachments, { healed: true });
+    if (heal) runTurn(task, chat, heal.text, heal.attachments, { healed: true, voice: heal.voice });
     // What this turn left behind, told to the others and remembered as this
     // chat's own high-water mark.
     //
