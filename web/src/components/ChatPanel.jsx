@@ -6,7 +6,7 @@ import {
 } from '../modelRules.js';
 import { sameTask } from '../taskKey.js';
 import { latestPhaseModel, modelEffortLabel, meta } from '../status.js';
-import { useDictation, dictationSupport } from '../useDictation.js';
+import { useDictation, dictationSupport, useStopDictationOnEscape } from '../useDictation.js';
 import { useSpeech, speechSupport } from '../useSpeech.js';
 import { splitVoice } from '../voice.js';
 import { onVoicePrefsChange, readVoiceOn, writeVoiceOn } from '../voicePrefs.js';
@@ -38,6 +38,8 @@ const MAX_MB = 20;
 // browser. Dictation calls `setText` on every interim result, and each write
 // is a parse, a sort and a stringify of every draft there is.
 const DRAFT_DEBOUNCE = 400;
+// How long «Deshacer» stays offered after the ✕ emptied the box.
+const CLEAR_UNDO_MS = 8000;
 
 /** Puts one node of an activity tree in place, under its parent or at the top. */
 function upsertItem(items, item, parentId) {
@@ -260,12 +262,41 @@ export default function ChatPanel({
     return () => window.removeEventListener('pagehide', flushDraft);
   }, []);
   const [files, setFiles] = useState([]);      // { name, size, dataBase64 }
+  // «Borrado · Deshacer»: what the ✕ emptied, kept for a few seconds so a click
+  // by mistake does not cost a long dictation.
+  const [cleared, setCleared] = useState(null);   // { text, files }
+  const clearTimer = useRef(null);
+  const dropUndo = () => { clearTimeout(clearTimer.current); setCleared(null); };
+  const clearComposer = () => {
+    // First the microphone: a recogniser that is still listening would write
+    // the old text back with its next result.
+    dictation.abort();
+    if (!text && !files.length) return;
+    setCleared({ text, files });
+    clearTimeout(clearTimer.current);
+    clearTimer.current = setTimeout(() => setCleared(null), CLEAR_UNDO_MS);
+    setText('');
+    setFiles([]);
+  };
+  const undoClear = () => {
+    if (!cleared) return;
+    setText(cleared.text);
+    setFiles(cleared.files);
+    dropUndo();
+  };
+  // Typing something new makes the old text a thing nobody asked to get back, and so does leaving the chat.
+  useEffect(() => { if (cleared && text) dropUndo(); }, [text]);
+  useEffect(() => () => clearTimeout(clearTimer.current), []);
+  useEffect(() => { dropUndo(); }, [chat?.id]);
   const [sending, setSending] = useState(false);
   const [dropping, setDropping] = useState(false);
   const scrollRef = useRef(null);
   const fileInput = useRef(null);
   const dictation = useDictation({ onText: setText });
   const micSupport = dictationSupport();
+  // Dictating, the first Escape stops the microphone and keeps what was heard
+  // (the dialogs do the same); the next one is free for the voice or the panel.
+  useStopDictationOnEscape(dictation);
   // The voice of this chat, a choice of this browser (see voicePrefs.js): the
   // chat reads aloud the `<voz>` summaries of its replies, and what is sent
   // while it is on carries the voice rule for that turn.
@@ -838,6 +869,12 @@ export default function ChatPanel({
               if (pasted.length) { e.preventDefault(); addFiles(pasted); }
             }}
             onKeyDown={(e) => {
+              // Typing over a dictation: the microphone steps aside (nothing else is
+              // written), or its next result would put its words over what was typed.
+              if (dictation.listening && !e.nativeEvent.isComposing
+                && ((e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) || e.key === 'Backspace' || e.key === 'Delete')) { // i18n-ok: KeyboardEvent.key
+                dictation.abort();
+              }
               if (e.key !== 'Enter') return; // i18n-ok: KeyboardEvent.key
               // Dictation and an IME confirm their candidate with Enter: that
               // one is not a send, it is the text landing in the box.
@@ -848,6 +885,17 @@ export default function ChatPanel({
               send();
             }}
           />
+          {(text || files.length > 0 || dictation.listening) && (
+            <button type="button" className="btn btn-icon btn-sm cp-clear" disabled={!ready}
+              aria-label={t.chat.panel.clearDraft} title={t.chat.panel.clearDraftTitle}
+              onClick={clearComposer}><Icon name="x" /></button>
+          )}
+          {cleared && (
+            <div className="cp-undo" role="status">
+              <span>{t.chat.panel.cleared}</span>
+              <button type="button" className="btn btn-xs" onClick={undoClear}>{t.chat.panel.undo}</button>
+            </div>
+          )}
           <div className="cp-tools">
             <button type="button" className="btn btn-icon btn-sm cp-tool" disabled={!ready} title={t.chat.panel.attach} aria-label={t.chat.panel.attach}
               onClick={() => fileInput.current?.click()}><Icon name="paperclip" /></button>

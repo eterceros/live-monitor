@@ -22,7 +22,10 @@ that Playwright version.
   it is on; a live reply is read aloud as its `<voz>` summary only, sentence by
   sentence, never its detail, and a reply without a tag says nothing; Escape
   cancels the speech; the choice is stored per chat and survives a reload; the
-  settings menu has the voice rows. Screenshots go to `--out`.
+  settings menu has the voice rows. It also checks the composer: dictation
+  reaches the box, Escape stops the microphone and keeps the text, typing over
+  a dictation makes the microphone step aside, and the ✕ empties the box (and
+  any dictation) with an undo. Screenshots go to `--out`.
 - The chat messages never reach Claude: the WebSocket is proxied, what the
   browser sends is recorded and the board's reply is injected by the test.
 

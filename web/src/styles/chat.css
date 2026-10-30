@@ -398,6 +398,15 @@
   box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 .cp-box:focus-within { box-shadow: inset 0 0 0 1px var(--accent); }
+/* The ✕ that empties the box sits in its corner and the text keeps clear of it. */
+.cp-box .cp-clear { position: absolute; top: 6px; right: 6px; z-index: 1; }
+.cp-box:has(.cp-clear) .cp-input { padding-right: 38px; }
+.cp-undo {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
 /* The grip hangs from the box's top edge; its look is styles.css's. */
 .cp-box .composer-grip { top: -7px; }
 .cp-box .composer-grip::before { background: var(--line-strong); }
