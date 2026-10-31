@@ -467,8 +467,12 @@
 .dictation-error { margin: 6px 14px 0; font-size: var(--fs-sm); color: var(--amber); }
 
 /* Voice of the chat: the speaker is lit while it is on, and the summary the
-   voice reads is shown apart from the rest of the reply, with what it is. */
-.speaker.on { color: var(--accent); }
+   voice reads is shown apart from the rest of the reply, with what it is. Like
+   the microphone it gets a tint and a ring, not only a colour and a slash, and
+   it breathes while the voice is actually talking. */
+.speaker.on { background: var(--tint-live); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.speaker.speaking { animation: speaker-pulse 1.4s ease-in-out infinite; }
+@keyframes speaker-pulse { 50% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--tint-live); } }
 .cb-voice {
   margin: 0 0 8px;
   padding: 6px 10px;
@@ -512,5 +516,5 @@
   .cp-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .mic.listening { animation: none; }
+  .mic.listening, .speaker.speaking { animation: none; }
 }
