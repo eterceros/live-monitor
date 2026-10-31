@@ -173,6 +173,8 @@ export default {
     voiceDefaultTitle: 'Si un chat que aún no has tocado empieza con la voz activada. Cada chat puede cambiarlo con el altavoz junto al micrófono. Se guarda en este navegador',
     voiceListenName: 'Órdenes de voz mientras habla',
     voiceListenTitle: 'Mientras el chat habla, el micrófono escucha solo frases enteras: «para», «basta» o «ya entendí» lo callan, y «más detalle», «menos detalle» o «repítelo» lo callan y se envían solas. Entiende las órdenes en español, inglés, francés y alemán, pero el micrófono escucha en el idioma de tu navegador, como el dictado. Hace falta usar auriculares: con altavoces el micrófono oiría la voz del chat. Se guarda en este navegador',
+    voiceHandsFreeName: 'Conversación manos libres',
+    voiceHandsFreeTitle: 'Al pulsar el micrófono, el chat envía lo que dices cuando haces una pausa, te lee su resumen y vuelve a abrir el micrófono solo al terminar, hasta que pulses Esc, toques parar, teclees o calles diez segundos. Necesita la voz del chat activada. Usa auriculares: con altavoces el micrófono oiría la voz del chat. Algunos móviles solo dejan abrir el micrófono con un toque, y entonces el ciclo puede cortarse tras cada respuesta. Se guarda en este navegador',
     voiceSource: 'este navegador',
     gitName: 'Git: actualización automática',
     gitTitle: 'Cada cuánto se actualiza el estado git de las tareas activas (ramas, commits, cambios){scope}',

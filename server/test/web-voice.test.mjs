@@ -84,6 +84,23 @@ test('preferencias: velocidad solo de las que se ofrecen, voz libre, escucha apa
   assert.equal(prefs.readVoiceListen(), false, 'escuchar «para» mientras habla es opcional');
   prefs.writeVoiceListen(true);
   assert.equal(prefs.readVoiceListen(), true);
+  assert.equal(prefs.readVoiceHandsFree(), false, 'el manos libres es opcional');
+  prefs.writeVoiceHandsFree(true);
+  assert.equal(prefs.readVoiceHandsFree(), true);
+});
+
+test('manos libres: el ciclo lo gobierna useHandsFree y el panel solo lo enchufa', () => {
+  const loop = src('useHandsFree.js');
+  assert.match(loop, /export const PAUSE_MS = /);
+  assert.match(loop, /dictation\.lastEnd\.current === 'self'/, 'solo se envía lo que terminó solo o lo que cortó el propio ciclo');
+  assert.match(loop, /phase !== 'wait' \|\| !replied \|\| speaking \|\| busy/, 'el micrófono no se reabre mientras el chat trabaja o habla');
+  assert.match(loop, /e\.key === 'Escape'/);
+  const panel = src('components/ChatPanel.jsx');
+  assert.match(panel, /useHandsFree\(\{/);
+  assert.match(panel, /handsFree\.phase === 'off' && detailCommand\(text\)/, 'el envío de «más detalle» no se duplica dentro del ciclo');
+  assert.match(panel, /else if \(handsFreePref && voiceOn && voiceSupported\) handsFree\.begin\(\)/);
+  assert.match(src('useDictation.js'), /lastEnd\.current = 'self'/);
+  assert.match(src('components/topbar/SettingsMenu.jsx'), /writeVoiceHandsFree\(!voice\.handsFree\)/);
 });
 
 test('el recorte de chats recordados no crece sin límite', () => {
@@ -182,7 +199,7 @@ test('el cableado: el micrófono de las órdenes escucha en el idioma del navega
   assert.match(speech, /if \(detailCommand\(heard\)\) \{ stop\(\); commandRef\.current\?\.\(String\(heard\)\.trim\(\)\); return; \}/);
   const panel = src('components/ChatPanel.jsx');
   assert.match(panel, /onCommand: \(words\) => \{ if \(chat && ready\) onSend\(chat\.id, words, \[\], \{ voice: voiceOnRef\.current && speechSupport\(\) \}\)/);
-  assert.match(panel, /wasListening\.current && !dictation\.listening && detailCommand\(text\) && ready && !sending && !files\.length\) send\(\)/);
+  assert.match(panel, /wasListening\.current && !dictation\.listening && handsFree\.phase === 'off' && detailCommand\(text\) && ready && !sending && !files\.length\) send\(\)/);
 });
 
 test('el toque que enciende el altavoz y el que envía desbloquean la voz del móvil', () => {

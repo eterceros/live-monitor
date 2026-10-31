@@ -9,8 +9,8 @@ import { usePlugins } from '../../usePlugins.js';
 import { DUO_OPTIONS, TRI_OPTIONS, projectTriState, triToProject } from '../../settingState.js';
 import { HOVER_DELAY_OPTIONS, onHoverDelayChange, readHoverDelay, writeHoverDelay } from '../../cardHover.js';
 import {
-  RATE_OPTIONS, onVoicePrefsChange, readVoiceDefault, readVoiceListen, readVoiceName, readVoiceRate,
-  writeVoiceDefault, writeVoiceListen, writeVoiceName, writeVoiceRate,
+  RATE_OPTIONS, onVoicePrefsChange, readVoiceDefault, readVoiceHandsFree, readVoiceListen, readVoiceName, readVoiceRate,
+  writeVoiceDefault, writeVoiceHandsFree, writeVoiceListen, writeVoiceName, writeVoiceRate,
 } from '../../voicePrefs.js';
 import { listVoices, speechSupport } from '../../useSpeech.js';
 import { useStrings, useLocale } from '../../i18n/useStrings.js';
@@ -68,7 +68,7 @@ function useHoverDelay() {
 
 /** The voice preferences of this browser, live: this menu and the chats follow the same event. */
 function useVoicePrefs() {
-  const read = () => ({ name: readVoiceName(), rate: readVoiceRate(), isDefault: readVoiceDefault(), listen: readVoiceListen() });
+  const read = () => ({ name: readVoiceName(), rate: readVoiceRate(), isDefault: readVoiceDefault(), listen: readVoiceListen(), handsFree: readVoiceHandsFree() });
   const [prefs, setPrefs] = useState(read);
   const [voices, setVoices] = useState(() => listVoices());
   useEffect(() => onVoicePrefsChange(() => setPrefs(read())), []);
@@ -298,6 +298,11 @@ export default function SettingsMenu({
                   effective={voice.listen} source={t.topbar.settings.voiceSource}>
                   <StateButton on={voice.listen} name={t.topbar.settings.voiceListenName} title={t.topbar.settings.voiceListenTitle}
                     onToggle={() => writeVoiceListen(!voice.listen)} />
+                </SettingRow>
+                <SettingRow layout="inline" icon="mic" name={t.topbar.settings.voiceHandsFreeName} title={t.topbar.settings.voiceHandsFreeTitle}
+                  effective={voice.handsFree} source={t.topbar.settings.voiceSource}>
+                  <StateButton on={voice.handsFree} name={t.topbar.settings.voiceHandsFreeName} title={t.topbar.settings.voiceHandsFreeTitle}
+                    onToggle={() => writeVoiceHandsFree(!voice.handsFree)} />
                 </SettingRow>
               </>
             )}

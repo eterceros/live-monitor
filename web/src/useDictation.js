@@ -64,6 +64,8 @@ export function useDictation({ onText, lang }) {
   const recognition = useRef(null);
   const owned = useRef(null);
   const prefix = useRef('');
+  // How the last session ended: `'self'` (a silence, the network, the browser's cap) or `'user'` (stopped, aborted or cut). The hands-free loop sends only what ended by itself.
+  const lastEnd = useRef(null);
 
   // Unmounting drops the ownership as well as the recogniser: a module-level
   // `live` still pointing at a dead one would make the next `start()`
@@ -81,6 +83,7 @@ export function useDictation({ onText, lang }) {
     owned.current = null;
     setListening(false);
     if (!rec) return;
+    lastEnd.current = 'user';
     try { if (hard) rec.abort(); else rec.stop(); } catch { /* already stopped */ }
   };
 
@@ -115,6 +118,7 @@ export function useDictation({ onText, lang }) {
     // dictation that replaced it — and clean up its ownership, not its own.
     const ended = () => {
       if (recognition.current !== rec) return;
+      lastEnd.current = 'self';
       recognition.current = null;
       dropMic(owned.current);
       owned.current = null;
@@ -135,6 +139,7 @@ export function useDictation({ onText, lang }) {
       release: () => {
         if (recognition.current === rec) recognition.current = null;
         if (owned.current === mine) owned.current = null;
+        lastEnd.current = 'user';
         setListening(false);
       },
     };
@@ -154,7 +159,7 @@ export function useDictation({ onText, lang }) {
     setListening(true);
   };
 
-  return { listening, error: errorText(error), stop, abort, toggle: (text) => (listening ? stop() : start(text)) };
+  return { listening, lastEnd, error: errorText(error), stop, abort, toggle: (text) => (listening ? stop() : start(text)) };
 }
 
 /**

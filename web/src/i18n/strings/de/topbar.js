@@ -170,6 +170,8 @@ export default {
     voiceDefaultTitle: 'Ob ein Chat, den du noch nicht angefasst hast, mit eingeschalteter Stimme beginnt. Jeder Chat kann das mit dem Lautsprecher neben dem Mikrofon ändern. Wird in diesem Browser gespeichert',
     voiceListenName: 'Sprachbefehle, während er spricht',
     voiceListenTitle: 'Während der Chat spricht, hört das Mikrofon nur auf ganze Sätze: „Stopp“, „genug“ oder „verstanden“ bringen ihn zum Schweigen, und „mehr Details“, „weniger Details“ oder „wiederhole das“ ebenso, und sie werden von selbst gesendet. Er versteht die Befehle auf Spanisch, Englisch, Französisch und Deutsch, aber das Mikrofon hört in der Sprache deines Browsers, wie beim Diktieren. Kopfhörer sind nötig: Mit Lautsprechern würde das Mikrofon die Stimme des Chats hören. Wird in diesem Browser gespeichert',
+    voiceHandsFreeName: 'Freisprech-Unterhaltung',
+    voiceHandsFreeTitle: 'Nach einem Tipp auf das Mikrofon sendet der Chat, was du sagst, sobald du eine Pause machst, liest seine Zusammenfassung vor und öffnet das Mikrofon am Ende von selbst wieder, bis du Esc drückst, auf Stopp tippst, tippst oder zehn Sekunden schweigst. Die Stimme des Chats muss eingeschaltet sein. Nutze Kopfhörer: Mit Lautsprechern würde das Mikrofon die Stimme des Chats hören. Manche Handys öffnen das Mikrofon nur nach einem Tipp, dann kann die Schleife nach jeder Antwort enden. Wird in diesem Browser gespeichert',
     voiceSource: 'diesem Browser',
     gitName: 'Git: automatische Aktualisierung',
     gitTitle: 'Wie oft der Git-Stand der aktiven Aufgaben (Branches, Commits, Änderungen) aktualisiert wird{scope}',
