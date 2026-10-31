@@ -55,12 +55,14 @@ export function pickVoice(voices, name, lang) {
  * better (Google's on Android, «Premium», «Enhanced» and Siri on Apple), and
  * the compact ones of iOS last. A guess from names, free of cost: a voice the
  * system does not have simply is not there, and the person can still choose one.
+ * Apple writes the label in the language of the phone («Mejorada», «Améliorée»,
+ * «Erweitert»), so the words of the four languages count.
  */
 export function voiceQuality(voice) {
   const name = voice?.name ?? '';
   if (/natural|neural/i.test(name)) return 3;
-  if (/premium|enhanced|siri|google/i.test(name)) return 2;
-  if (/compact/i.test(name)) return 0;
+  if (/premium|enhanced|mejorad|am[eé]lior|erweitert|verbessert|siri|google/i.test(name)) return 2;
+  if (/compact|kompakt/i.test(name)) return 0;
   return 1;
 }
 

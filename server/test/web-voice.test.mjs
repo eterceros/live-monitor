@@ -206,6 +206,11 @@ test('pickVoice: sin elección, la voz que suena más natural del idioma', () =>
   assert.equal(pickVoice(voices, '', 'en').name, 'Daniel (Enhanced)', 'luego las mejoradas');
   assert.equal(pickVoice(voices.slice(0, 1).concat(voices.slice(3, 4)), '', 'es').name, 'Microsoft Helena', 'la compacta, la última');
   assert.equal(pickVoice(voices, 'Microsoft Helena', 'es').name, 'Microsoft Helena', 'lo elegido a mano gana siempre');
+  // Un iPhone en español rotula sus voces en español: «Mejorada» cuenta como «Enhanced».
+  const iphone = [{ name: 'Mónica', lang: 'es-ES' }, { name: 'Paulina (Mejorada)', lang: 'es-MX' }, { name: 'Marie (Améliorée)', lang: 'fr-FR' }, { name: 'Anna', lang: 'de-DE' }, { name: 'Petra (Erweitert)', lang: 'de-DE' }];
+  assert.equal(pickVoice(iphone, '', 'es').name, 'Paulina (Mejorada)');
+  assert.equal(pickVoice(iphone, '', 'fr').name, 'Marie (Améliorée)');
+  assert.equal(pickVoice(iphone, '', 'de').name, 'Petra (Erweitert)');
 });
 
 test('el cableado: el micrófono de las órdenes escucha en el idioma del navegador, y lo dictado entero se envía solo', () => {
