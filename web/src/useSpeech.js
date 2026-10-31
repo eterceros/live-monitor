@@ -67,6 +67,8 @@ export function useSpeech({ onCommand = null } = {}) {
   const [speaking, setSpeaking] = useState(false);
   const queue = useRef([]);
   const alive = useRef(true);
+  // Whether one of OUR sentences is in flight. `speechSynthesis.speaking` is not asked: a phone can leave the silent unlocking word «speaking» for good, and the reply would wait behind it forever.
+  const playing = useRef(false);
   const listener = useRef(null);
 
   const stopListening = useCallback(() => {
@@ -79,6 +81,7 @@ export function useSpeech({ onCommand = null } = {}) {
 
   const stop = useCallback(() => {
     queue.current = [];
+    playing.current = false;
     stopListening();
     if (speechSupport()) window.speechSynthesis.cancel();
     if (alive.current) setSpeaking(false);
@@ -105,7 +108,7 @@ export function useSpeech({ onCommand = null } = {}) {
     rec.onend = () => {
       if (listener.current !== entry) return;
       listener.current = null;
-      if (queue.current.length || window.speechSynthesis?.speaking) listenForStop();
+      if (queue.current.length || playing.current) listenForStop();
     };
     rec.onerror = () => { if (listener.current === entry) listener.current = null; };
     listener.current = entry;
@@ -117,16 +120,18 @@ export function useSpeech({ onCommand = null } = {}) {
     if (!speechSupport()) return;
     const item = queue.current.shift();
     if (item === undefined) {
+      playing.current = false;
       stopListening();
       if (alive.current) setSpeaking(false);
       return;
     }
+    playing.current = true;
     const utterance = new window.SpeechSynthesisUtterance(item.text);
     const voice = pickVoice(window.speechSynthesis.getVoices(), readVoiceName(), item.lang);
     if (voice) { utterance.voice = voice; utterance.lang = voice.lang; } else if (item.lang) utterance.lang = BCP47[item.lang] ?? item.lang;
     utterance.rate = readVoiceRate();
     utterance.onend = next;
-    utterance.onerror = () => { if (queue.current.length) next(); else if (alive.current) setSpeaking(false); };
+    utterance.onerror = () => { if (queue.current.length) next(); else { playing.current = false; if (alive.current) setSpeaking(false); } };
     window.speechSynthesis.speak(utterance);
   }, [stopListening]);
 
@@ -135,11 +140,15 @@ export function useSpeech({ onCommand = null } = {}) {
     // A summary the detection cannot place is read in the browser's language.
     const parts = toUtterances(blocks, recognitionLang().slice(0, 2).toLowerCase());
     if (!parts.length) return;
-    const idle = !queue.current.length && !window.speechSynthesis.speaking;
+    const idle = !playing.current;
     queue.current.push(...parts);
     setSpeaking(true);
     listenForStop();
-    if (idle) next();
+    if (idle) {
+      // Whatever the browser still holds is not ours (the unlocking word): clear it so this sentence is the next to be said.
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) window.speechSynthesis.cancel();
+      next();
+    }
   }, [listenForStop, next]);
 
   // A change of preferences (the listening switch, the voice) applies to what is said from now on.
