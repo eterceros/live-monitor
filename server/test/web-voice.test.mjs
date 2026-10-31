@@ -192,6 +192,22 @@ test('pickVoice: la voz elegida solo se usa si habla el idioma del texto', () =>
   assert.equal(pickVoice(voices, '', 'de'), null, 'sin voz de ese idioma, decide el navegador');
 });
 
+test('pickVoice: sin elección, la voz que suena más natural del idioma', () => {
+  const voices = [
+    { name: 'Microsoft Helena', lang: 'es-ES' },
+    { name: 'Microsoft Elvira Online (Natural)', lang: 'es-ES' },
+    { name: 'Google español', lang: 'es-ES' },
+    { name: 'Monica (Compact)', lang: 'es-ES' },
+    { name: 'Samantha', lang: 'en-US' },
+    { name: 'Daniel (Enhanced)', lang: 'en-GB' },
+    { name: 'Grandpa', lang: 'en-US' },
+  ];
+  assert.equal(pickVoice(voices, '', 'es').name, 'Microsoft Elvira Online (Natural)', 'las neuronales primero');
+  assert.equal(pickVoice(voices, '', 'en').name, 'Daniel (Enhanced)', 'luego las mejoradas');
+  assert.equal(pickVoice(voices.slice(0, 1).concat(voices.slice(3, 4)), '', 'es').name, 'Microsoft Helena', 'la compacta, la última');
+  assert.equal(pickVoice(voices, 'Microsoft Helena', 'es').name, 'Microsoft Helena', 'lo elegido a mano gana siempre');
+});
+
 test('el cableado: el micrófono de las órdenes escucha en el idioma del navegador, y lo dictado entero se envía solo', () => {
   const speech = src('useSpeech.js');
   assert.match(speech, /rec\.lang = recognitionLang\(\);/, 'el mismo idioma que el dictado, no uno fijo');
