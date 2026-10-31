@@ -940,7 +940,7 @@ export default function ChatPanel({
               }}
             />
             {voiceSupported && (
-              <button type="button" className={`btn btn-icon btn-sm cp-tool speaker${voiceOn ? ' on' : ''}`} disabled={!ready}
+              <button type="button" className={`btn btn-icon btn-sm cp-tool speaker${voiceOn ? ' on' : ''}${speech.speaking ? ' speaking' : ''}`} disabled={!ready}
                 aria-pressed={voiceOn} aria-label={voiceOn ? t.chat.panel.voiceOff : t.chat.panel.voiceOn}
                 title={voiceOn ? t.chat.panel.voiceOffTitle : t.chat.panel.voiceOnTitle}
                 onClick={toggleVoice}><Icon name={voiceOn ? 'volume' : 'volume-off'} /></button>
