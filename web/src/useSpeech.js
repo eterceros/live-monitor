@@ -39,13 +39,29 @@ const speaks = (voice, lang) => Boolean(lang) && voice.lang?.toLowerCase().start
 /**
  * The voice for a text in `lang`: the one the person chose, if it speaks that
  * language (a Spanish voice reading English sounds wrong, so a choice for
- * another language gives way); else the first voice of the language; else
+ * another language gives way); else the best voice of the language; else
  * nothing, and the browser picks.
  */
 export function pickVoice(voices, name, lang) {
   const chosen = voices.find((v) => name && v.name === name);
   if (chosen && (!lang || speaks(chosen, lang))) return chosen;
-  return voices.find((v) => speaks(v, lang)) ?? null;
+  // `reduce` keeps the first of equal voices, so the system's own order breaks ties.
+  return voices.filter((v) => speaks(v, lang)).reduce((best, v) => (!best || voiceQuality(v) > voiceQuality(best) ? v : best), null);
+}
+
+/**
+ * How natural a system voice usually sounds, from its name: the neural ones
+ * (Edge «Natural», «Neural») first, then the ones the platforms ship as
+ * better (Google's on Android, «Premium», «Enhanced» and Siri on Apple), and
+ * the compact ones of iOS last. A guess from names, free of cost: a voice the
+ * system does not have simply is not there, and the person can still choose one.
+ */
+export function voiceQuality(voice) {
+  const name = voice?.name ?? '';
+  if (/natural|neural/i.test(name)) return 3;
+  if (/premium|enhanced|siri|google/i.test(name)) return 2;
+  if (/compact/i.test(name)) return 0;
+  return 1;
 }
 
 const BCP47 = { es: 'es-ES', en: 'en-US', fr: 'fr-FR', de: 'de-DE' };
