@@ -266,6 +266,29 @@ check('una frase que solo contiene «para» no lo calla', (await page.evaluate((
 await page.keyboard.press('Escape');
 await page.evaluate(() => localStorage.removeItem('hfsmon-voice-listen'));
 
+// Hands-free: one tap on the microphone, the pause sends, the reply is said, the microphone reopens by itself.
+await page.evaluate(() => { localStorage.setItem('hfsmon-voice-handsfree', 'true'); window.dispatchEvent(new Event('hfsmon-voice-changed')); });
+sent.length = 0;
+await box.fill('');
+await mic.click();
+const recsBefore = await page.evaluate(() => window.__recs.length);
+await say('cómo va el proyecto');
+check('manos libres: no envía mientras sigues hablando', sent.length === 0);
+await page.waitForTimeout(2400);
+check('manos libres: la pausa cierra el turno y lo envía solo, con la marca de voz', sent.length === 1 && sent[0].text === 'cómo va el proyecto' && sent[0].voice === true, JSON.stringify(sent[0] ?? null));
+check('manos libres: el micrófono no se reabre antes de la respuesta', (await page.evaluate(() => window.__recs.length)) === recsBefore);
+toPage({ ...chat, message: { id: 'hf1', role: 'assistant', text: '<voz>Todo va bien.</voz>\n\nDetalle largo.', ts: new Date().toISOString() } });
+await page.waitForTimeout(1500);
+check('manos libres: tras decir la respuesta, el micrófono se abre solo', (await page.evaluate(() => window.__recs.length)) === recsBefore + 1
+  && (await page.evaluate(() => window.__recs.at(-1).started === true)) && (await mic.getAttribute('aria-pressed')) === 'true');
+await page.keyboard.press('Escape');
+await page.waitForTimeout(300);
+check('manos libres: Esc corta el micrófono', (await mic.getAttribute('aria-pressed')) === 'false');
+toPage({ ...chat, message: { id: 'hf2', role: 'assistant', text: '<voz>Otra cosa.</voz>', ts: new Date().toISOString() } });
+await page.waitForTimeout(1500);
+check('manos libres: roto el ciclo con Esc, no se reabre', (await mic.getAttribute('aria-pressed')) === 'false');
+await page.evaluate(() => { localStorage.removeItem('hfsmon-voice-handsfree'); window.dispatchEvent(new Event('hfsmon-voice-changed')); });
+
 // Turning it off: sends without the mark and stops speaking.
 await page.locator('button.speaker').click();
 sent.length = 0;
@@ -279,7 +302,7 @@ await page.getByRole('button', { name: /ajustes|settings/i }).first().click().ca
 await page.waitForTimeout(400);
 const menuText = await page.locator('body').innerText();
 check('los ajustes ofrecen voz, velocidad, valor por defecto y órdenes de voz',
-  /Voz del chat/.test(menuText) && /Velocidad de la voz/.test(menuText) && /Voz en chats nuevos/.test(menuText) && /Órdenes de voz/.test(menuText));
+  /Voz del chat/.test(menuText) && /Velocidad de la voz/.test(menuText) && /Voz en chats nuevos/.test(menuText) && /Órdenes de voz/.test(menuText) && /Conversación manos libres/.test(menuText));
 await page.screenshot({ path: path.join(OUT, '05-settings.png') });
 
 await browser.close();

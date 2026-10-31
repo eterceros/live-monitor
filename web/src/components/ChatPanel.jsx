@@ -8,8 +8,9 @@ import { sameTask } from '../taskKey.js';
 import { latestPhaseModel, modelEffortLabel, meta } from '../status.js';
 import { useDictation, dictationSupport, useStopDictationOnEscape } from '../useDictation.js';
 import { useSpeech, speechSupport, primeSpeech } from '../useSpeech.js';
+import { useHandsFree } from '../useHandsFree.js';
 import { detailCommand, splitVoice } from '../voice.js';
-import { onVoicePrefsChange, readVoiceOn, writeVoiceOn } from '../voicePrefs.js';
+import { onVoicePrefsChange, readVoiceHandsFree, readVoiceOn, writeVoiceOn } from '../voicePrefs.js';
 import { useComposerHeight } from '../useComposerHeight.js';
 import Icon from './Icon.jsx';
 import Pill from './ui/Pill.jsx';
@@ -310,9 +311,12 @@ export default function ChatPanel({
   voiceOnRef.current = voiceOn;
   const speechRef = useRef(speech);
   speechRef.current = speech;
+  const [handsFreePref, setHandsFreePref] = useState(readVoiceHandsFree);
+  const noteReplyRef = useRef(() => {});   // the hands-free loop hears that a reply came (set once the loop exists, below)
   useEffect(() => {
     setVoiceOn(readVoiceOn(chat?.id));
-    return onVoicePrefsChange(() => setVoiceOn(readVoiceOn(chat?.id)));
+    setHandsFreePref(readVoiceHandsFree());
+    return onVoicePrefsChange(() => { setVoiceOn(readVoiceOn(chat?.id)); setHandsFreePref(readVoiceHandsFree()); });
   }, [chat?.id]);
   // A voice must not carry over to the next tab, nor outlive the panel.
   useEffect(() => () => speechRef.current.stop(), [chat?.id]);
@@ -359,6 +363,7 @@ export default function ChatPanel({
       // Only a message that arrives now is read: loading a chat never speaks its history.
       const said = ev.detail.message;
       if (voiceOnRef.current && said?.role === 'assistant') {
+        noteReplyRef.current();
         const { spoken } = splitVoice(said.text);
         if (spoken.length) speechRef.current.speak(spoken);
       }
@@ -473,10 +478,17 @@ export default function ChatPanel({
   // Anything but a whole command is left for you to send.
   const wasListening = useRef(false);
   useEffect(() => {
-    if (wasListening.current && !dictation.listening && detailCommand(text) && ready && !sending && !files.length) send();
+    // Not in the hands-free loop: it sends what it heard by itself.
+    if (wasListening.current && !dictation.listening && handsFree.phase === 'off' && detailCommand(text) && ready && !sending && !files.length) send();
     wasListening.current = dictation.listening;
   }, [dictation.listening]);
   const canSend = Boolean((text.trim() || files.length) && ready && !sending);
+  // Hands-free: tap the microphone once and the chat listens, sends at your pause, reads its reply and listens again.
+  const handsFree = useHandsFree({
+    enabled: handsFreePref && voiceOn && voiceSupported && micSupport.ok,
+    dictation, text, canSend, send, speaking: speech.speaking, busy: Boolean(chat?.busy),
+  });
+  noteReplyRef.current = handsFree.noteReply;
   // A disabled button says why, as the artboard's «Escribe algo para enviar».
   const sendTitle = canSend ? undefined : !ready ? t.chat.panel.sendNoWorktree : t.chat.panel.sendEmpty;
   const busyChats = chats.filter((c) => c.busy).length;
@@ -887,6 +899,7 @@ export default function ChatPanel({
               // written), or its next result would put its words over what was typed.
               if (dictation.listening && !e.nativeEvent.isComposing
                 && ((e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) || e.key === 'Backspace' || e.key === 'Delete')) { // i18n-ok: KeyboardEvent.key
+                handsFree.end();
                 dictation.abort();
               }
               if (e.key !== 'Enter') return; // i18n-ok: KeyboardEvent.key
@@ -920,7 +933,11 @@ export default function ChatPanel({
               listening={dictation.listening}
               support={micSupport}
               disabled={!ready}
-              onToggle={() => dictation.toggle(text)}
+              onToggle={() => {
+                if (dictation.listening) handsFree.end();
+                else if (handsFreePref && voiceOn && voiceSupported) handsFree.begin();
+                dictation.toggle(text);
+              }}
             />
             {voiceSupported && (
               <button type="button" className={`btn btn-icon btn-sm cp-tool speaker${voiceOn ? ' on' : ''}`} disabled={!ready}
@@ -931,7 +948,7 @@ export default function ChatPanel({
             {speech.speaking && (
               <button type="button" className="btn btn-icon btn-sm cp-tool speaker-stop"
                 aria-label={t.chat.panel.voiceStop} title={t.chat.panel.voiceStopTitle}
-                onClick={speech.stop}><Icon name="stop" /></button>
+                onClick={() => { handsFree.end(); speech.stop(); }}><Icon name="stop" /></button>
             )}
             <span className="cp-hint">{t.chat.panel.keysHint}</span>
             <button type="button" className="btn btn-primary cp-send" onClick={send} disabled={!canSend} title={sendTitle}>

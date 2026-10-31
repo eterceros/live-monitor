@@ -8,6 +8,7 @@ const DEFAULT_KEY = 'hfsmon-voice-default';   // what a chat with no choice of i
 const VOICE_KEY = 'hfsmon-voice-name';        // '' is «automatic»: a voice of the chat's language
 const RATE_KEY = 'hfsmon-voice-rate';
 const LISTEN_KEY = 'hfsmon-voice-listen';     // listen for «para» while it talks (needs headphones)
+const HANDSFREE_KEY = 'hfsmon-voice-handsfree'; // the microphone reopens by itself after each reply (needs headphones)
 const CHANGED = 'hfsmon-voice-changed';
 
 /** The speeds the settings menu offers. */
@@ -62,3 +63,6 @@ export function writeVoiceRate(rate) {
 
 export const readVoiceListen = () => read(LISTEN_KEY, false) === true;
 export function writeVoiceListen(on) { write(LISTEN_KEY, on === true); tell(); }
+
+export const readVoiceHandsFree = () => read(HANDSFREE_KEY, false) === true;
+export function writeVoiceHandsFree(on) { write(HANDSFREE_KEY, on === true); tell(); }

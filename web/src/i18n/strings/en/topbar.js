@@ -170,6 +170,8 @@ export default {
     voiceDefaultTitle: 'Whether a chat you have not touched yet starts with the voice on. Each chat can change it with the speaker next to the microphone. Saved in this browser',
     voiceListenName: 'Voice commands while it talks',
     voiceListenTitle: 'While the chat talks, the microphone listens only for whole phrases: “stop”, “enough” or “got it” silence it, and “more detail”, “less detail” or “repeat that” silence it and are sent by themselves. It understands the commands in Spanish, English, French and German, but the microphone listens in your browser’s language, like the dictation. Headphones are needed: with loudspeakers the microphone would hear the chat’s own voice. Saved in this browser',
+    voiceHandsFreeName: 'Hands-free conversation',
+    voiceHandsFreeTitle: 'After you tap the microphone, the chat sends what you say when you pause, reads its summary aloud, and opens the microphone again by itself when it finishes, until you press Escape, tap stop, type, or stay silent for ten seconds. Needs the chat’s voice on. Use headphones: with loudspeakers the microphone would hear the chat’s own voice. Some phones only let the microphone open from a tap, so the loop may stop after each answer. Saved in this browser',
     voiceSource: 'this browser',
     gitName: 'Git: automatic refresh',
     gitTitle: 'How often the git state of the active tasks (branches, commits, changes) is refreshed{scope}',

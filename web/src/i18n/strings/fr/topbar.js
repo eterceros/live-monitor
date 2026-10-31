@@ -170,6 +170,8 @@ export default {
     voiceDefaultTitle: 'Si un chat que tu n’as pas encore touché démarre avec la voix activée. Chaque chat peut le changer avec le haut-parleur à côté du micro. Enregistré dans ce navigateur',
     voiceListenName: 'Commandes vocales pendant qu’il parle',
     voiceListenTitle: 'Pendant que le chat parle, le micro n’écoute que des phrases entières : « stop », « ça suffit » ou « j’ai compris » le font taire, et « plus de détails », « moins de détails » ou « répète » le font taire et sont envoyées seules. Il comprend les commandes en espagnol, anglais, français et allemand, mais le micro écoute dans la langue de ton navigateur, comme la dictée. Il faut un casque : avec des haut-parleurs le micro entendrait la voix du chat. Enregistré dans ce navigateur',
+    voiceHandsFreeName: 'Conversation mains libres',
+    voiceHandsFreeTitle: 'Après un appui sur le micro, le chat envoie ce que vous dites quand vous faites une pause, lit son résumé à voix haute, puis rouvre le micro tout seul à la fin, jusqu’à ce que vous appuyiez sur Échap, touchiez arrêter, tapiez au clavier ou vous taisiez dix secondes. Demande que la voix du chat soit activée. Utilisez un casque : avec des haut-parleurs, le micro entendrait la voix du chat. Certains téléphones n’ouvrent le micro que sur un appui, et la boucle peut alors s’arrêter après chaque réponse. Enregistré dans ce navigateur',
     voiceSource: 'ce navigateur',
     gitName: 'Git : actualisation automatique',
     gitTitle: 'Fréquence d’actualisation de l’état git des tâches actives (branches, commits, changements){scope}',
