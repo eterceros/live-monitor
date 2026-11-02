@@ -262,3 +262,29 @@ test('la versión de claude que espera el tablero sale del SDK instalado', async
   const patch = /^0\.3\.(\d+)$/.exec(sdk)?.[1];
   assert.equal(expectedClaudeVersion(), patch ? `2.1.${patch}` : null);
 });
+
+test('un runner sirve un proyecto no predeterminado solo si lo declara en projects', async () => {
+  const { machineFor, machineHostsProject } = await import('../src/machine.js');
+  const before = { machines: config.machines, project: { ...config.project } };
+  try {
+    config.machines = {
+      devbox: {
+        kind: 'runner', url: 'http://devbox:7421', token: 't', repoPath: '/x', worktreeRoot: '/y',
+        projects: { ehr: { repoPath: '/home/u/src/EHR', worktreeRoot: '/home/u/src/EHR-wt' } },
+      },
+    };
+    registerRunnerClient((name, spec) => ({ name, kind: 'runner', spec, repoPath: spec.repoPath, worktreeRoot: spec.worktreeRoot }));
+    const view = machineFor('devbox', 'ehr');
+    assert.equal(view.repoPath, '/home/u/src/EHR');
+    assert.equal(view.worktreeRoot, '/home/u/src/EHR-wt');
+    assert.equal(machineFor('devbox', 'hfs').repoPath, '/x');
+    assert.throws(() => machineFor('devbox', 'otro'), /not declared on machine "devbox"/);
+    assert.equal(machineHostsProject('devbox', 'ehr'), true);
+    assert.equal(machineHostsProject('devbox', 'otro'), false);
+    assert.equal(machineHostsProject('local', 'otro'), true);
+  } finally {
+    if (before.machines !== undefined) config.machines = before.machines; else delete config.machines;
+    config.project = before.project;
+    registerRunnerClient((name) => { throw new Error(`machines.${name}: el cliente del runner no está cargado`); });
+  }
+});

@@ -2,8 +2,8 @@ import os from 'node:os';
 import { config } from './config.js';
 import { begin, end } from './metrics.js';
 import { store, MOVE_STEPS } from './store.js';
-import { DEFAULT_PROJECT_ID, coerceKey, keyOf } from './keys.js';
-import { machines, machineViewFor } from './machine.js';
+import { coerceKey, keyOf } from './keys.js';
+import { machines, machineViewFor, machineHostsProject } from './machine.js';
 import { runClaude } from './claude.js';
 import { renderPrompt } from './prompts.js';
 import { chatsOf, openChats, chatById, chatRunning } from './chats.js';
@@ -471,15 +471,15 @@ function blockersFrom(task, to, source, target, { discardTargetLocal = false, re
   const blockers = [];
   const add = (code, text, items) => blockers.push(items ? { code, text, items } : { code, text });
 
-  // Only the default project travels. The others are local by decision, not by
-  // accident: `runner-1` has no checkout of them and no machine entry that
-  // points at one, so a move there would build a worktree from a repository
-  // that is not on that box. Listed alone, and returning here, because nothing
-  // else in this function has anything to add — every other blocker is
-  // something you could go and fix.
-  if (task.project !== DEFAULT_PROJECT_ID) {
+  // A non-default project travels only between machines that hold a checkout
+  // of it: local always, a runner only if `machines.<name>.projects` declares
+  // it. Otherwise a move would build a worktree from a repository that is not
+  // on that box. Listed alone, and returning here, because nothing else in
+  // this function has anything to add.
+  const from = task.machine ?? 'local';
+  if (!machineHostsProject(from, task.project) || !machineHostsProject(to, task.project)) {
     add('project_not_movable',
-      `The project "${task.project}" exists only on this machine: only ${DEFAULT_PROJECT_ID} tasks can be moved`);
+      `The project "${task.project}" is not declared on both machines: add it under machines.<name>.projects in config.json`);
     return blockers;
   }
 

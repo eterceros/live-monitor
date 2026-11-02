@@ -354,6 +354,22 @@ export function requireProject(projectId, fn) {
 }
 
 /**
+ * The checkout a runner declares for a project, or null: `{repoPath, worktreeRoot}`
+ * from `config.machines[name].projects[projectId]`, both required.
+ */
+export function declaredProject(name, projectId) {
+  const spec = config.machines?.[name]?.projects?.[projectId];
+  return spec?.repoPath && spec?.worktreeRoot ? { repoPath: spec.repoPath, worktreeRoot: spec.worktreeRoot } : null;
+}
+
+/** Can this machine hold a task of this project? Local always; a runner only if it declares it. */
+export function machineHostsProject(name, projectId) {
+  if (projectId === DEFAULT_PROJECT_ID) return true;
+  const kind = name === 'local' ? 'local' : config.machines?.[name]?.kind;
+  return kind === 'local' || !!declaredProject(name, projectId);
+}
+
+/**
  * A machine as one project sees it.
  *
  * With two projects, "local" is no longer one thing: the same disk holds two
@@ -385,14 +401,22 @@ export function machineFor(name, projectId) {
   if (!base) throw new Error(`Machine "${name}" is not in config.machines`);
   if (projectId === DEFAULT_PROJECT_ID) return base;
 
-  // Deliberate: no second project is declared on any runner, and guessing a
-  // path on another machine is how a session ends up cloning a repository to
-  // get its bearings.
+  // A runner serves a non-default project only when its entry in
+  // `config.machines` declares one (`projects: { <id>: { repoPath, worktreeRoot } }`):
+  // guessing a path on another machine is how a session ends up cloning a
+  // repository to get its bearings.
   if (base.kind !== 'local') {
-    throw new Error(
-      `Project "${projectId}" is not declared on machine "${name}": `
-      + 'only the default project runs on a runner',
-    );
+    const declared = declaredProject(name, projectId);
+    if (!declared) {
+      throw new Error(
+        `Project "${projectId}" is not declared on machine "${name}": `
+        + 'add it under machines.<name>.projects, or only the default project runs there',
+      );
+    }
+    const view = Object.create(base);
+    view.repoPath = declared.repoPath;
+    view.worktreeRoot = declared.worktreeRoot;
+    return view;
   }
 
   const project = projectOf(projectId);
