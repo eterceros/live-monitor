@@ -413,10 +413,19 @@ export function machineFor(name, projectId) {
         + 'add it under machines.<name>.projects, or only the default project runs there',
       );
     }
-    const view = Object.create(base);
-    view.repoPath = declared.repoPath;
-    view.worktreeRoot = declared.worktreeRoot;
-    return view;
+    // Not `Object.create(base)`: RunnerMachine keeps its plumbing in #private
+    // methods, and those throw "Receiver must be an instance of class
+    // RunnerMachine" when `this` is a derived object. Every member is read
+    // from the real machine and every method runs on it; only the two paths
+    // differ (nothing in the client reads them back through `this`).
+    const paths = { repoPath: declared.repoPath, worktreeRoot: declared.worktreeRoot };
+    return new Proxy(base, {
+      get(target, prop) {
+        if (Object.hasOwn(paths, prop)) return paths[prop];
+        const value = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
   }
 
   const project = projectOf(projectId);
