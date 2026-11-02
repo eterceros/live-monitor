@@ -288,3 +288,28 @@ test('un runner sirve un proyecto no predeterminado solo si lo declara en projec
     registerRunnerClient((name) => { throw new Error(`machines.${name}: el cliente del runner no está cargado`); });
   }
 });
+
+test('la vista de un proyecto en un runner real conserva los métodos privados del cliente', async () => {
+  const { machineFor, registerRunnerClient: reg } = await import('../src/machine.js');
+  const { RunnerMachine } = await import('../src/runner-client.js');
+  const before = { machines: config.machines, project: { ...config.project } };
+  try {
+    config.machines = {
+      devbox: {
+        kind: 'runner', url: 'http://127.0.0.1:9', token: 't', repoPath: '/x', worktreeRoot: '/y',
+        projects: { ehr: { repoPath: '/home/u/src/EHR', worktreeRoot: '/home/u/src/EHR-wt' } },
+      },
+    };
+    reg((name, spec) => new RunnerMachine(name, spec));
+    const view = machineFor('devbox', 'ehr');
+    assert.equal(view.repoPath, '/home/u/src/EHR');
+    assert.equal(view.kind, 'runner');
+    // Reaches #fetch/#json: the failure must be a connection error, never a receiver error.
+    await assert.rejects(() => view.info(), (e) => !/Receiver must be an instance/.test(e.message));
+    assert.equal(view.samePath('/a/b', '/a/b/'), true);
+  } finally {
+    if (before.machines !== undefined) config.machines = before.machines; else delete config.machines;
+    config.project = before.project;
+    reg((name) => { throw new Error(`machines.${name}: el cliente del runner no está cargado`); });
+  }
+});
