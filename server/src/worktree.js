@@ -455,7 +455,7 @@ async function integrateRemoteBranch(machine, wtPath, branch, { onLine } = {}) {
   if (m.ok) return remoteOnly;
   const files = await machine.exec('git', [RO, 'diff', '--name-only', '--diff-filter=U'], { cwd: wtPath });
   if (await mergeInProgress(machine, wtPath)) await machine.exec('git', ['merge', '--abort'], { cwd: wtPath });
-  const e = new Error(`git push rejected: origin/${branch} has commits this branch lacks and merging them conflicts${files.ok && lines(files.stdout).length ? ` in ${lines(files.stdout).join(', ')}` : ''}; the merge was aborted and nothing was forced`);
+  const e = new Error(`git push rejected: origin/${branch} has commits this branch lacks and merging them conflicts${files.ok && lines(files.stdout).length ? ` in ${lines(files.stdout).join(', ')}` : ''}; the merge was aborted and nothing was forced. To resolve it, ask the chat (or use the fix button): «merge origin/${branch} into this branch, resolve the conflicts, and push — do not rebase or force-push»`);
   e.code = 'PUSH_DIVERGED';
   e.remoteOnly = remoteOnly;
   throw e;
