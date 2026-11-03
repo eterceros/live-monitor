@@ -302,6 +302,14 @@ export const api = {
     if (!res.ok) throw Object.assign(new Error(data.error ?? res.statusText), { status: res.status, data });
     return data;
   },
+  // Putting a project on a runner (clone + install), and how that is going.
+  prepareProject: (project, machine) => send(`/api/projects/${encodeURIComponent(project)}/machines/${encodeURIComponent(machine)}/prepare`),
+  prepareStatus: async (project, machine) => {
+    const res = await fetch(`/api/projects/${encodeURIComponent(project)}/machines/${encodeURIComponent(machine)}/prepare`, { headers: authHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error ?? res.statusText), { status: res.status, data });
+    return data;
+  },
   moveTask: (project, issue, body) => send(`${T(project, issue)}/move`, body),
   retryMove: (project, issue) => send(`${T(project, issue)}/move/retry`),
   discardMove: (project, issue) => send(`${T(project, issue)}/move/discard`),

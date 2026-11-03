@@ -19,6 +19,7 @@ import { formatNumber } from '../i18n/format.js';
  * stays on screen while the next one comes.
  */
 const POLL_MS = 5000;
+const PREPARE_POLL_MS = 2000;
 const LIFTABLE = new Set(['target_ahead', 'target_dirty']);
 const WIP_MESSAGE = 'wip: uncommitted work'; // i18n-ok: the git commit message, not UI text
 
@@ -73,6 +74,73 @@ function planLines(data, task, to) {
   return lines;
 }
 
+/**
+ * «Prepare» for a blocker that says the project is not on the destination
+ * runner: clones it and installs its dependencies there. Reads the job on open
+ * (one may already be running, started from another tab) and every two seconds
+ * while it runs; `onDone` asks the dialog to re-check right away.
+ */
+function PrepareRow({ project, machine, onDone }) {
+  const t = useStrings().ops.move;
+  const [job, setJob] = useState(null);       // { status, step, lines, error } from the server
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState(null);
+  const [tick, setTick] = useState(0);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+    const read = async () => {
+      try {
+        const next = await api.prepareStatus(project, machine);
+        if (cancelled) return;
+        setJob(next);
+        if (next.status === 'running') timer = setTimeout(read, PREPARE_POLL_MS);
+        else if (next.status === 'done') onDone();
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      }
+    };
+    read();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [project, machine, tick]);
+
+  const start = async () => {
+    setStarting(true);
+    setError(null);
+    try {
+      setJob(await api.prepareProject(project, machine));
+      if (alive.current) setTick((n) => n + 1);
+    } catch (e) {
+      if (alive.current) setError(e.message);
+    } finally {
+      if (alive.current) setStarting(false);
+    }
+  };
+
+  const running = job?.status === 'running';
+  const failure = error ?? (job?.status === 'failed' ? job.error : null);
+  return (
+    <span className="move-prepare">
+      {running ? (
+        <>
+          <span className="move-prepare-step"><span className="spinner" /> {t.prepareStep?.[job.step] ?? t.preparing}</span>
+          {(job.lines ?? []).length > 0 && <pre className="move-prepare-log">{job.lines.slice(-8).join('\n')}</pre>}
+        </>
+      ) : (
+        <>
+          <button className="btn btn-primary btn-sm" disabled={starting} onClick={start} title={fill(t.prepareTitle, { to: machine })}>
+            {starting ? t.preparing : failure ? t.prepareRetry : t.prepare}
+          </button>
+          {failure && <span className="move-prepare-error">{fill(t.prepareFailed, { message: failure })}</span>}
+        </>
+      )}
+    </span>
+  );
+}
+
 export default function MoveDialog({ task, machines = [], machineStatus = {}, initialTo = null, onClose }) {
   const all = useStrings();
   const t = all.ops.move;
@@ -91,6 +159,8 @@ export default function MoveDialog({ task, machines = [], machineStatus = {}, in
   const [failure, setFailure] = useState(null);
   const [stopping, setStopping] = useState(() => new Set());
   const [confirming, setConfirming] = useState(false);
+  // Bumped when a «Prepare» finishes: ask the preflight again now, not in five seconds.
+  const [recheck, setRecheck] = useState(0);
   const { ask, notice } = useDialog();
   const alive = useRef(true);
   const inflight = useRef(null);
@@ -135,7 +205,7 @@ export default function MoveDialog({ task, machines = [], machineStatus = {}, in
     };
     run();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [task.issue, to, discard, posting]);
+  }, [task.issue, to, discard, posting, recheck]);
 
   const current = pre && pre.to === to ? pre : null;
   const data = current?.data ?? null;
@@ -248,6 +318,11 @@ export default function MoveDialog({ task, machines = [], machineStatus = {}, in
                   <span className="move-blocker-text">{b.text}</span>
                 </li>
                 {withItems.has(b.code) && (b.items ?? []).map((item, n) => itemRow(b, item, n))}
+                {b.code === 'project_not_prepared' && (
+                  <li className="move-blocker-item move-prepare-row">
+                    <PrepareRow project={task.project} machine={to} onDone={() => setRecheck((n) => n + 1)} />
+                  </li>
+                )}
               </React.Fragment>
             ))}
           </ul>

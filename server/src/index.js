@@ -26,6 +26,7 @@ import { holderKey, getHolder, getHolderByKey, allHolders, holderMachines, migra
 import { registerIssueDraftRoutes } from './issuedraft.js';
 import { HOLDER_TAB } from './chattabs.js';
 import { machineOf, machines } from './machine.js';
+import { startPrepare, prepareStatus, PrepareError } from './prepare.js';
 import { DEFAULT_PROJECT_ID, coerceKey, keyOf, makeKey, parseKey } from './keys.js';
 import { listProjects, projectOf, saveProjects, configFor, configSectionFor, setReviewerChoice, setProjectDesign, setProjectRestricted, removeProject, removedProjectFor, forgetRemovedProject, setGhAccount } from './projects.js';
 import { ghTokenFor, identityIssues, ghAccounts, defaultGhLogin } from './gh-account.js';
@@ -1175,6 +1176,19 @@ app.get('/api/machines', async (_req, res) => {
     res.json({ machines: await machineStatus() });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// «Prepare»: put a registered project on a runner (clone, worktree root, install).
+// Nothing but the two ids comes from the request; see prepare.js for why.
+app.get('/api/projects/:project/machines/:machine/prepare', (req, res) => {
+  res.json(prepareStatus(req.params.machine, req.params.project));
+});
+app.post('/api/projects/:project/machines/:machine/prepare', async (req, res) => {
+  try {
+    res.status(202).json(await startPrepare(req.params.machine, req.params.project));
+  } catch (e) {
+    res.status(e instanceof PrepareError ? e.status : 500).json({ error: e.message });
   }
 });
 
