@@ -32,6 +32,7 @@ import { ghTokenFor, identityIssues, ghAccounts, defaultGhLogin } from './gh-acc
 import { overridesOf, detectProfile, detectDefaultBranch, isProfileId } from './profiles.js';
 import { tuningSnapshot, setTuning } from './tuning.js';
 import { publicWorkPlan } from './publicplan.js';
+import { reapTrash } from './trash.js';
 import { detectRepo, detectGhUser } from './repo-identity.js';
 import { movePreflight, moveTask, retryMove, discardMove, removePlace } from './move.js';
 import { resolvedModels } from './models.js';
@@ -1892,6 +1893,8 @@ server.listen(config.port, bootHost, () => {
   console.log(`acceso: ${describeAccess()}`);
   console.log(`proyecto: ${config.project.repoPath} (${config.github.repo})`);
   console.log(`plantillas de prompt validadas: ${promptCount}`);
+  // What a crash or a restart left in the trash of a worktree root (`trash.js`).
+  if (process.platform === 'win32') for (const p of listProjects()) if (p.worktreeRoot) void reapTrash(p.worktreeRoot);
   startPolling();
   startUsageProbe();
   tick();
