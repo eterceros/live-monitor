@@ -81,6 +81,8 @@ export function decide(task, facts) {
 
   if (!facts.canAuto) return skip('the task is manual: resolve it yourself or start it from its card');
   if (facts.dirty) return skip('there is uncommitted work in the worktree that a merge could overwrite');
+  // Its work is already in this very `origin/<base>`: a second merge would find the same.
+  if (sameMain && run.status === 'already_in_base') return skip(run.reason ?? 'the branch adds nothing to this origin/base');
   if (sameMain && run.attempts >= maxAttemptsOf(facts.limits)) {
     return skip(`already tried ${run.attempts} time(s) against this origin/${task.base ?? 'main'}: ${run.reason ?? 'it did not resolve'}`);
   }
