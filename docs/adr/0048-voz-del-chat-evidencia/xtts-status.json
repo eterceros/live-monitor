@@ -1,0 +1,47 @@
+{
+ "engine": "Coqui XTTS-v2 via coqui-tts 0.28.0",
+ "model_id": "tts_models/multilingual/multi-dataset/xtts_v2 (HF coqui/XTTS-v2)",
+ "license": "CPML (Coqui Public Model License) - NON-COMMERCIAL; used for listening comparison only. Code of coqui-tts package is MPL-2.0.",
+ "languages_covered": [
+  "es",
+  "en"
+ ],
+ "supported_by_model": "17 languages incl. es, en, fr, de (fr/de not synthesized: scope reduced by owner)",
+ "samples": [
+  {
+   "file": "samples/es-claribel.wav",
+   "lang": "es",
+   "voice": "Claribel Dervla",
+   "synth_seconds": 8.31,
+   "audio_seconds": 9.32,
+   "device": "cuda"
+  },
+  {
+   "file": "samples/en-claribel.wav",
+   "lang": "en",
+   "voice": "Claribel Dervla",
+   "synth_seconds": 7.17,
+   "audio_seconds": 9.45,
+   "device": "cuda"
+  },
+  {
+   "file": "samples/es-ana.wav",
+   "lang": "es",
+   "voice": "Ana Florence",
+   "synth_seconds": 7.44,
+   "audio_seconds": 9.69,
+   "device": "cuda"
+  },
+  {
+   "file": "samples/en-ana.wav",
+   "lang": "en",
+   "voice": "Ana Florence",
+   "synth_seconds": 5.71,
+   "audio_seconds": 8.62,
+   "device": "cuda"
+  }
+ ],
+ "works_on_windows": true,
+ "failures": [],
+ "notes": "Python 3.12 venv, torch 2.6.0+cu124 (cuda True), free VRAM 5994 MiB before run. Built-in bundled speakers only (Claribel Dervla, Ana Florence), no cloning. Model load 109.9s. Harmless transformers warning about eos_token_id 50256. Models cached in xtts\\models. Cannot listen; no quality claim."
+}

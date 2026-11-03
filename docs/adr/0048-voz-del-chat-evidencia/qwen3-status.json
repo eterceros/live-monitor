@@ -1,0 +1,42 @@
+{
+ "engine": "Qwen3-TTS (pip qwen-tts, torch 2.11.0+cu128, bfloat16, default attention, no flash-attn)",
+ "model_id": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+ "license": "Apache-2.0",
+ "languages_covered": [
+  "es",
+  "en"
+ ],
+ "samples": [
+  {
+   "file": "samples/es-Ryan.wav",
+   "lang": "es",
+   "voice": "Ryan",
+   "synth_seconds": 55.91,
+   "audio_seconds": 10.08
+  },
+  {
+   "file": "samples/es-Serena.wav",
+   "lang": "es",
+   "voice": "Serena",
+   "synth_seconds": 47.17,
+   "audio_seconds": 8.8
+  },
+  {
+   "file": "samples/en-Ryan.wav",
+   "lang": "en",
+   "voice": "Ryan",
+   "synth_seconds": 51.62,
+   "audio_seconds": 9.44
+  },
+  {
+   "file": "samples/en-Aiden.wav",
+   "lang": "en",
+   "voice": "Aiden",
+   "synth_seconds": 45.64,
+   "audio_seconds": 8.64
+  }
+ ],
+ "works_on_windows": true,
+ "failures": [],
+ "notes": "GPU RTX 3060 Laptop. Model load 105 s (includes first download). Peak VRAM 2631 MiB used per nvidia-smi (torch peak allocated 2363 MiB). Synthesis ~5x slower than real time (45-56 s per 9-10 s clip), no flash-attn. 'SoX could not be found' warning is harmless. Preset voices only; Ryan/Aiden are native English, Serena native Chinese; the model has no Spanish-native preset. FR/DE skipped by owner request (model supports them). Sound quality not assessed. Model cache lives in the user HF cache (~/.cache/huggingface), outside voice-samples."
+}

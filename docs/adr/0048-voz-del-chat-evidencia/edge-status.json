@@ -1,0 +1,42 @@
+{
+ "engine": "edge-tts",
+ "model_id": "edge-tts 7.3.1 (Microsoft online neural voices)",
+ "license": "edge-tts: LGPL-3.0 client; voices are a Microsoft online service, unofficial client, no license grant",
+ "languages_covered": [
+  "es",
+  "en"
+ ],
+ "samples": [
+  {
+   "file": "samples/es-es-ES-ElviraNeural.mp3",
+   "lang": "es",
+   "voice": "es-ES-ElviraNeural",
+   "synth_seconds": 3.05,
+   "audio_seconds": 9.58
+  },
+  {
+   "file": "samples/es-es-MX-DaliaNeural.mp3",
+   "lang": "es",
+   "voice": "es-MX-DaliaNeural",
+   "synth_seconds": 2.81,
+   "audio_seconds": 9.77
+  },
+  {
+   "file": "samples/en-en-US-AriaNeural.mp3",
+   "lang": "en",
+   "voice": "en-US-AriaNeural",
+   "synth_seconds": 2.24,
+   "audio_seconds": 9.72
+  },
+  {
+   "file": "samples/en-en-US-JennyNeural.mp3",
+   "lang": "en",
+   "voice": "en-US-JennyNeural",
+   "synth_seconds": 2.42,
+   "audio_seconds": 9.65
+  }
+ ],
+ "works_on_windows": true,
+ "failures": [],
+ "notes": "Listening comparison only. Unofficial client of a Microsoft service: DO NOT recommend for integration. Requires internet; synthesis timing includes network. French/German skipped by owner scope change. No sound-quality claim made."
+}

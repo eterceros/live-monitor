@@ -1,0 +1,31 @@
+{
+ "engine": "Chatterbox Multilingual (Resemble AI)",
+ "model_id": "ResembleAI/chatterbox (HF; PyPI chatterbox-tts 0.1.7, class chatterbox.mtl_tts.ChatterboxMultilingualTTS)",
+ "license": "MIT",
+ "languages_covered": [
+  "es",
+  "en"
+ ],
+ "supported_by_model": "23 languages incl. es, en, fr, de (fr/de not synthesized: scope reduced by owner)",
+ "samples": [
+  {
+   "file": "samples/es-default.wav",
+   "lang": "es",
+   "voice": "default",
+   "synth_seconds": 34.24,
+   "audio_seconds": 16.98,
+   "device": "cuda"
+  },
+  {
+   "file": "samples/en-default.wav",
+   "lang": "en",
+   "voice": "default",
+   "synth_seconds": 18.98,
+   "audio_seconds": 9.22,
+   "device": "cuda"
+  }
+ ],
+ "works_on_windows": true,
+ "failures": [],
+ "notes": "Python 3.12 venv. chatterbox-tts pins torch==2.6.0, which pip installed as CPU build; replaced with torch 2.6.0+cu124 (cuda available True, driver CUDA 13 is compatible). Free VRAM 5994 MiB before run. Default built-in voice (no audio_prompt_path), no voice cloning. Model load 16.6s. First run (whole text in one call) gave ~6 s clips with the library forcing EOS (token repetition / long_tail warnings), so the clips may be cut short; final samples synthesize per sentence and join with 0.25 s gaps; the library still logged forced-EOS warnings on some sentences, so some sentences might be cut or malformed. Cannot listen; no quality claim. Timings are for the whole text (sum of per-sentence calls), model already loaded. HF cache is in chatterbox\\hf."
+}
