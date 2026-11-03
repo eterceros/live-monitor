@@ -402,10 +402,63 @@ export async function pushBranch(machine, wtPath, branch, { onLine } = {}) {
   // Pushed as the project's GitHub account, or not at all (`gh-account.js`).
   // Only a local worktree can be asked; a runner's paths are not this machine's.
   if (machine.kind === 'local') await assertPushIdentity(wtPath);
-  const r = await machine.exec('git', ['push', '-u', 'origin', branch], {
+  const push = () => machine.exec('git', ['push', '-u', 'origin', branch], {
     cwd: wtPath, onLine, timeoutMs: 3 * 60 * 1000, env: { GIT_TERMINAL_PROMPT: '0' },
   });
-  if (!r.ok) throw new Error(`git push failed: ${r.stderr}`);
+  const r = await push();
+  if (r.ok) return { merged: false, remoteOnly: [] };
+  if (!PUSH_DIVERGED.test(r.stderr ?? '')) throw new Error(`git push failed: ${r.stderr}`);
+
+  // Rejected because origin has commits this branch lacks (a rebase, an amend,
+  // or someone else pushing). Never forced here: the only thing done on its own
+  // is to bring them in with a merge, which loses nothing and leaves the next
+  // push a fast-forward. A forced push is a person's decision, with a lease.
+  const remoteOnly = await integrateRemoteBranch(machine, wtPath, branch, { onLine });
+  const again = await push();
+  if (!again.ok) throw new Error(`git push failed: ${again.stderr}`);
+  return { merged: true, remoteOnly };
+}
+
+// `! [rejected] … (non-fast-forward)` / `(fetch first)`. A hook or a protected
+// branch says `[remote rejected]` instead, and merging would not change that.
+const PUSH_DIVERGED = /!\s+\[rejected\]|non-fast-forward|\(fetch first\)/;
+
+/**
+ * The commits origin/<branch> has that HEAD does not: sha, author name and
+ * email, subject. Newest first.
+ */
+export async function remoteOnlyCommits(machine, wtPath, branch) {
+  const r = await machine.exec('git', [RO, 'log', '--format=%h%x09%an%x09%ae%x09%s', `HEAD..origin/${branch}`], { cwd: wtPath });
+  if (!r.ok) return [];
+  return lines(r.stdout).map((l) => {
+    const [sha, author, email, ...subject] = l.split('\t');
+    return { sha, author, email, subject: subject.join('\t') };
+  });
+}
+
+/**
+ * Merges origin/<branch> into the branch after a rejected push. On a conflict
+ * the merge is aborted (the worktree is left as it was) and the error carries
+ * the commits and files involved: the person decides, nothing is overwritten.
+ */
+async function integrateRemoteBranch(machine, wtPath, branch, { onLine } = {}) {
+  const fetched = await machine.exec('git', ['fetch', 'origin', branch], {
+    cwd: wtPath, onLine, timeoutMs: 3 * 60 * 1000, env: { GIT_TERMINAL_PROMPT: '0' },
+  });
+  if (!fetched.ok) throw new Error(`git push failed: rejected, and fetching origin/${branch} failed: ${lastLine(fetched)}`);
+  const remoteOnly = await remoteOnlyCommits(machine, wtPath, branch);
+  const who = [...new Set(remoteOnly.map((c) => c.author))].join(', ');
+  onLine?.(`push rejected: origin/${branch} has ${remoteOnly.length} commit(s) this branch lacks${who ? ` (by ${who})` : ''}; merging them in, nothing is forced`);
+  const m = await machine.exec('git', ['merge', '--no-edit', '-m', `Merge origin/${branch} into ${branch}`, `origin/${branch}`], {
+    cwd: wtPath, onLine, timeoutMs: 2 * 60 * 1000, env: { GIT_TERMINAL_PROMPT: '0' },
+  });
+  if (m.ok) return remoteOnly;
+  const files = await machine.exec('git', [RO, 'diff', '--name-only', '--diff-filter=U'], { cwd: wtPath });
+  if (await mergeInProgress(machine, wtPath)) await machine.exec('git', ['merge', '--abort'], { cwd: wtPath });
+  const e = new Error(`git push rejected: origin/${branch} has commits this branch lacks and merging them conflicts${files.ok && lines(files.stdout).length ? ` in ${lines(files.stdout).join(', ')}` : ''}; the merge was aborted and nothing was forced`);
+  e.code = 'PUSH_DIVERGED';
+  e.remoteOnly = remoteOnly;
+  throw e;
 }
 
 /** Where `createWorktree` puts a branch on this machine: the branch with `/` flattened to `-`. */
