@@ -1,6 +1,7 @@
 import { machineFor, requireProject } from './machine.js';
 import { shared } from './inflight.js';
 import { assertPushIdentity } from './gh-account.js';
+import { canTrash, moveToTrash, reapTrash, clearHeavyDirs } from './trash.js';
 
 /**
  * Git on a task's worktree. Every function takes the `Machine` the worktree
@@ -765,6 +766,21 @@ export async function removeWorktree(machine, wtPath, { onLine } = {}) {
   }
 
   if (await isProjectWorktree(machine, wtPath)) {
+    if (canTrash(machine)) {
+      // Windows: rename it away (instant) and let the reaper delete it with
+      // `rmdir /s /q`, out of the way (`trash.js`). Git forgets it on the prune.
+      const trashed = machine.worktreeRoot && machine.samePath(machine.path.dirname(wtPath), machine.worktreeRoot)
+        ? await moveToTrash(machine.worktreeRoot, wtPath) : null;
+      if (trashed) {
+        await machine.exec('git', ['worktree', 'prune'], { cwd: repo });
+        onLine?.(`moved ${wtPath} to ${trashed}; deleting it in the background`);
+        void reapTrash(machine.worktreeRoot);
+        return;
+      }
+      // Refused (a process holds it) or not under the worktree root: the heavy
+      // folders go with rmdir, which is faster than git, and git does the rest.
+      await clearHeavyDirs(wtPath, { onLine });
+    }
     const r = await machine.exec('git', ['worktree', 'remove', '--force', wtPath], {
       cwd: repo, onLine, timeoutMs: 20 * 60 * 1000,
     });
