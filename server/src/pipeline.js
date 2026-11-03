@@ -740,7 +740,12 @@ export async function refreshClassification(task, steps = CLASSIFY_STEPS) {
   }
   // Tasks the board itself drove keep their own richer state (draft, or ready
   // for review) while their PR is open; a merge or a close is GitHub's word.
-  const next = boardOwned && verdict.state === 'waiting_approval' ? task.state : verdict.state;
+  // The one exception: a card in «ready for review» whose own PR went back to
+  // draft on GitHub (somebody pulled it back) belongs in «PR draft» again.
+  const backToDraft = task.state === 'ready' && current?.state === 'DRAFT';
+  const next = boardOwned && verdict.state === 'waiting_approval'
+    ? (backToDraft ? 'pr_draft' : task.state)
+    : verdict.state;
   if (next !== task.state) {
     store.setState(task, next);
     store.addLog(task, 'guard', existing.reasons.join('; ') || 'no prior work on GitHub');
