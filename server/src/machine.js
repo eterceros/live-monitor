@@ -354,12 +354,28 @@ export function requireProject(projectId, fn) {
 }
 
 /**
- * The checkout a runner declares for a project, or null: `{repoPath, worktreeRoot}`
- * from `config.machines[name].projects[projectId]`, both required.
+ * The checkout a runner holds for a project, or null: `{repoPath, worktreeRoot}`.
+ *
+ * An entry in `config.machines[name].projects[projectId]` wins (both paths
+ * required). Otherwise, when the runner declares `projectsRoot`, the paths
+ * follow a convention: `<projectsRoot>/<folder>` and `<projectsRoot>/<folder>-wt`,
+ * where `<folder>` is the last segment of the project's own `repoPath` on the
+ * board — not the GitHub repo name, which does not always match the folder
+ * (`EHR`, `MPSIA-TPOS-ACADEMIASYS`). Whether the checkout is actually there is
+ * a different question, answered by the move preflight.
  */
 export function declaredProject(name, projectId) {
-  const spec = config.machines?.[name]?.projects?.[projectId];
-  return spec?.repoPath && spec?.worktreeRoot ? { repoPath: spec.repoPath, worktreeRoot: spec.worktreeRoot } : null;
+  const spec = config.machines?.[name];
+  const explicit = spec?.projects?.[projectId];
+  if (explicit?.repoPath && explicit?.worktreeRoot) {
+    return { repoPath: explicit.repoPath, worktreeRoot: explicit.worktreeRoot };
+  }
+  if (spec?.kind !== 'runner' || typeof spec.projectsRoot !== 'string' || !spec.projectsRoot.trim()) return null;
+  const project = projectOf(projectId);
+  const folder = String(project?.repoPath ?? '').split(/[\\/]+/).filter(Boolean).pop();
+  if (!folder) return null;
+  const root = spec.projectsRoot.trim().replace(/\/+$/, '');
+  return { repoPath: `${root}/${folder}`, worktreeRoot: `${root}/${folder}-wt` };
 }
 
 /** Can this machine hold a task of this project? Local always; a runner only if it declares it. */
@@ -410,7 +426,7 @@ export function machineFor(name, projectId) {
     if (!declared) {
       throw new Error(
         `Project "${projectId}" is not declared on machine "${name}": `
-        + 'add it under machines.<name>.projects, or only the default project runs there',
+        + 'declare it under machines.<name>.projects or set machines.<name>.projectsRoot, or only the default project runs there',
       );
     }
     // Not `Object.create(base)`: RunnerMachine keeps its plumbing in #private

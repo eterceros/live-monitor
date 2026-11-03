@@ -395,9 +395,13 @@ test('un destino que no contesta y uno cuyo git worktree list falla son un bloqu
   const ready = move.moveHooks.assertMachineReady;
   config.machines = {
     ...original,
-    ghost: { ...original.box, repoPath: path.join(ROOT, 'no-existe') },
+    // A checkout whose .git is not a repository: it is there, but git cannot list its worktrees.
+    ghost: { ...original.box, repoPath: path.join(ROOT, 'roto') },
+    // No checkout at all: the project was never put on that machine.
+    vacio: { ...original.box, repoPath: path.join(ROOT, 'no-existe') },
     mute: { ...original.box },
   };
+  mkdirSync(path.join(ROOT, 'roto', '.git'), { recursive: true });
   move.moveHooks.probeMs = 2000;
   move.moveHooks.assertMachineReady = (m) => (m.name === 'mute' ? new Promise(() => {}) : ready(m));
   try {
@@ -408,6 +412,9 @@ test('un destino que no contesta y uno cuyo git worktree list falla son un bloqu
 
     const ghost = await move.moveBlockers(task, 'ghost');
     assert.match(ghost.find((b) => b.code === 'target_git')?.text ?? '', /worktree list/, JSON.stringify(ghost));
+
+    const vacio = await move.moveBlockers(task, 'vacio');
+    assert.match(vacio.find((b) => b.code === 'project_not_prepared')?.text ?? '', /not on vacio yet/, JSON.stringify(vacio));
   } finally {
     config.machines = original;
     move.moveHooks.probeMs = probeMs;
