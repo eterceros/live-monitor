@@ -474,12 +474,15 @@
 .speaker.speaking { animation: speaker-pulse 1.4s ease-in-out infinite; }
 @keyframes speaker-pulse { 50% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--tint-live); } }
 .cb-voice {
+  position: relative;
   margin: 0 0 8px;
-  padding: 6px 10px;
+  padding: 6px 40px 6px 10px;   /* room on the right for the listen-again button */
   border-left: 3px solid var(--accent);
   background: var(--surface-3);
   border-radius: 0 6px 6px 0;
 }
+.cb-voice-play { position: absolute; top: 4px; right: 4px; }
+.cb-voice-play.on { background: var(--tint-live); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .cb-voice-tag { font-size: var(--fs-sm); font-weight: 600; color: var(--accent); margin-right: 4px; white-space: nowrap; }
 .cb-voice-tag svg { vertical-align: -2px; }
 
@@ -510,6 +513,8 @@
      chat: the head keeps 32 (the artboard's 28 plus the 4 the expand button gets) and
      the composer, which is typed on with a thumb, gets the 44 of the rest of the phone. */
   .cp-tools .cp-tool { --btn-h: 44px; }
+  .cb-voice { padding-right: 52px; min-height: 44px; }
+  .cb-voice-play { --btn-h: 40px; top: 2px; right: 2px; }
   .cp-send { --btn-h: 44px; margin-left: auto; }
   .cp-composer { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
   /* A line of keys that hints at a keyboard has no place on a phone. */

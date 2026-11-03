@@ -121,6 +121,18 @@ check('habla solo el resumen, por frases', spoken.join('|') === 'Encontré el fa
 check('el detalle no se oye', !spoken.some((s) => /Detalle|código/.test(s)));
 await page.screenshot({ path: path.join(OUT, '03-spoken-summary.png') });
 
+// Listening again: a button in each spoken summary, and «repeat the last reply» next to the speaker.
+check('cada resumen hablado tiene su botón de escuchar de nuevo', (await page.locator('.cb-voice-play').count()) >= 2);
+check('con la voz callada, el compositor ofrece repetir la última respuesta', (await page.locator('button.speaker-replay').count()) === 1);
+await page.evaluate(() => { window.__spoken.length = 0; });
+await page.locator('button.speaker-replay').click();
+await page.waitForTimeout(700);
+check('repetir la última respuesta la vuelve a leer, igual', (await page.evaluate(() => window.__spoken.map((s) => s.text))).join('|') === 'Encontré el fallo.|Ya lo arreglé y pasan los tests.');
+await page.evaluate(() => { window.__spoken.length = 0; });
+await page.locator('.cb-voice-play').last().click();
+await page.waitForTimeout(700);
+check('el botón del resumen lo lee otra vez', (await page.evaluate(() => window.__spoken.map((s) => s.text))).join('|') === 'Encontré el fallo.|Ya lo arreglé y pasan los tests.');
+
 if (MOBILE) {
   // On a phone the rest is the same page: what matters is that the speaker is there, can be tapped and speaks.
   await page.screenshot({ path: path.join(OUT, '03-mobile-spoken.png') });

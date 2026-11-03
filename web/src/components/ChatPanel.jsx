@@ -9,6 +9,7 @@ import { latestPhaseModel, modelEffortLabel, meta } from '../status.js';
 import { useDictation, dictationSupport, useStopDictationOnEscape } from '../useDictation.js';
 import { useSpeech, speechSupport, primeSpeech } from '../useSpeech.js';
 import { useHandsFree } from '../useHandsFree.js';
+import { VoiceReplayContext, lastSpokenReply } from '../voiceReplay.js';
 import { detailCommand, splitVoice } from '../voice.js';
 import { onVoicePrefsChange, readVoiceHandsFree, readVoiceOn, writeVoiceOn } from '../voicePrefs.js';
 import { useComposerHeight } from '../useComposerHeight.js';
@@ -489,6 +490,20 @@ export default function ChatPanel({
     dictation, text, canSend, send, speaking: speech.speaking, busy: Boolean(chat?.busy),
   });
   noteReplyRef.current = handsFree.noteReply;
+  // Listening again to a summary, from a bubble or from the composer: it cuts the loop and the dictation (the microphone would hear it) and works with the speaker off, since pressing it is the order.
+  const [replayId, setReplayId] = useState(null);
+  useEffect(() => { if (!speech.speaking) setReplayId(null); }, [speech.speaking]);
+  const replay = (id, blocks) => {
+    handsFree.end();
+    dictation.abort();
+    primeSpeech();   // the tap that lets a phone speak
+    speech.stop();
+    setReplayId(id);
+    speech.speak(blocks);
+  };
+  const stopSpeaking = () => { handsFree.end(); speech.stop(); };
+  const replayValue = { supported: voiceSupported, speaking: speech.speaking, replayId, replay, stop: stopSpeaking };
+  const lastSpoken = voiceSupported ? lastSpokenReply(messages, splitVoice) : null;
   // A disabled button says why, as the artboard's «Escribe algo para enviar».
   const sendTitle = canSend ? undefined : !ready ? t.chat.panel.sendNoWorktree : t.chat.panel.sendEmpty;
   const busyChats = chats.filter((c) => c.busy).length;
@@ -496,6 +511,7 @@ export default function ChatPanel({
 
   return (
     <ChatPathsContext.Provider value={chatPathsValue}>
+    <VoiceReplayContext.Provider value={replayValue}>
     <section
       className={`subpanel subpanel-chat ${dropping ? 'dropping' : ''}`}
       onDragOver={(e) => { e.preventDefault(); if (canAttach) setDropping(true); }}
@@ -948,7 +964,12 @@ export default function ChatPanel({
             {speech.speaking && (
               <button type="button" className="btn btn-icon btn-sm cp-tool speaker-stop"
                 aria-label={t.chat.panel.voiceStop} title={t.chat.panel.voiceStopTitle}
-                onClick={() => { handsFree.end(); speech.stop(); }}><Icon name="stop" /></button>
+                onClick={stopSpeaking}><Icon name="stop" /></button>
+            )}
+            {lastSpoken && !speech.speaking && (
+              <button type="button" className="btn btn-icon btn-sm cp-tool speaker-replay" disabled={!ready}
+                aria-label={t.chat.panel.voiceReplay} title={t.chat.panel.voiceReplayTitle}
+                onClick={() => replay(lastSpoken.id, lastSpoken.spoken)}><Icon name="repeat" /></button>
             )}
             <span className="cp-hint">{t.chat.panel.keysHint}</span>
             <button type="button" className="btn btn-primary cp-send" onClick={send} disabled={!canSend} title={sendTitle}>
@@ -961,6 +982,7 @@ export default function ChatPanel({
         <CreateTaskDialog owner={task} chatId={chat.id} onClose={() => setCreating(false)} />
       )}
     </section>
+    </VoiceReplayContext.Provider>
     </ChatPathsContext.Provider>
   );
 }
