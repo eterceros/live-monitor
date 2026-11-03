@@ -397,8 +397,12 @@ export async function commitSubject(machine, wtPath, { base = DEFAULT_BASE, rang
  * With no terminal to answer a credential prompt, a push that asks for one
  * fails at once instead of hanging until the timeout; three minutes still
  * leaves room for a slow upload over the tailnet.
+ *
+ * `integrate: false` for a caller whose contract is to leave the branch as it
+ * was when origin refuses (a move between machines): the rejection is then a
+ * plain error, as it was before the merge was added.
  */
-export async function pushBranch(machine, wtPath, branch, { onLine } = {}) {
+export async function pushBranch(machine, wtPath, branch, { onLine, integrate = true } = {}) {
   // Pushed as the project's GitHub account, or not at all (`gh-account.js`).
   // Only a local worktree can be asked; a runner's paths are not this machine's.
   if (machine.kind === 'local') await assertPushIdentity(wtPath);
@@ -407,7 +411,7 @@ export async function pushBranch(machine, wtPath, branch, { onLine } = {}) {
   });
   const r = await push();
   if (r.ok) return { merged: false, remoteOnly: [] };
-  if (!PUSH_DIVERGED.test(r.stderr ?? '')) throw new Error(`git push failed: ${r.stderr}`);
+  if (!integrate || !PUSH_DIVERGED.test(r.stderr ?? '')) throw new Error(`git push failed: ${r.stderr}`);
 
   // Rejected because origin has commits this branch lacks (a rebase, an amend,
   // or someone else pushing). Never forced here: the only thing done on its own

@@ -138,3 +138,18 @@ test('un rechazo de un hook (remote rejected) no es una divergencia: sigue siend
   execFileSync('chmod', ['+x', path.join(w.origin, 'hooks', 'pre-receive')]);
   await assert.rejects(() => pushBranch(w.board.m, wt, 'feat/4-cuatro'), (e) => /git push failed/.test(e.message) && e.code !== 'PUSH_DIVERGED');
 });
+
+test('con integrate: false un rechazo por divergencia es un error de push y la rama queda como estaba (la mudanza)', async (t) => {
+  const w = world();
+  t.after(w.cleanup);
+  const branch = 'feat/5-cinco';
+  const wt = await diverge(w, branch, { theirFile: 'theirs.txt', theirText: 'suyo\n' });
+  const originTip = git(['rev-parse', `refs/heads/${branch}`], w.origin).trim();
+  write(wt, 'mine.txt', 'mio v2\n');
+  git(['add', '--', 'mine.txt'], wt);
+  git(['commit', '-m', 'mio sin subir'], wt);
+  const head = git(['rev-parse', 'HEAD'], wt).trim();
+  await assert.rejects(() => pushBranch(w.board.m, wt, branch, { integrate: false }), (e) => /git push failed/.test(e.message) && e.code !== 'PUSH_DIVERGED');
+  assert.equal(git(['rev-parse', 'HEAD'], wt).trim(), head, 'ni un merge');
+  assert.equal(git(['rev-parse', `refs/heads/${branch}`], w.origin).trim(), originTip, 'origin intacto');
+});
