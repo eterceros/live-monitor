@@ -425,6 +425,19 @@ async function inspectTarget(task, to, { fetchFn = cachedFetch, fresh = false } 
     return out;
   }
 
+  // A runner only holds the projects somebody put there: the checkout must exist
+  // before a worktree can be cut from it. (Local checkouts come from the registry.)
+  if (machine.kind === 'runner' && machine.repoPath) {
+    try {
+      const has = await probe(machine.fs.exists(machine.path.join(machine.repoPath, '.git')), 'looking for the project checkout');
+      if (!has) { out.noCheckout = machine.repoPath; return out; }
+    } catch (e) {
+      out.error = e.message;
+      out.unreachable = /sin respuesta|no response/.test(e.message);
+      return out;
+    }
+  }
+
   try {
     out.foreign = await probe(foreignWorktreeFor(machine, branch), 'git worktree list');
     if (out.foreign) out.worktree = 'foreign';
@@ -479,7 +492,7 @@ function blockersFrom(task, to, source, target, { discardTargetLocal = false, re
   const from = task.machine ?? 'local';
   if (!machineHostsProject(from, task.project) || !machineHostsProject(to, task.project)) {
     add('project_not_movable',
-      `The project "${task.project}" is not declared on both machines: add it under machines.<name>.projects in config.json`);
+      `The project "${task.project}" is not declared on both machines: set machines.<name>.projectsRoot (or machines.<name>.projects) in config.local.json`);
     return blockers;
   }
 
@@ -516,6 +529,11 @@ function blockersFrom(task, to, source, target, { discardTargetLocal = false, re
 
   if (!target.ready) {
     add(target.unreachable ? 'target_unreachable' : 'target_not_ready', target.error ?? `${to} is not ready`);
+    return blockers;
+  }
+  if (target.noCheckout) {
+    add('project_not_prepared',
+      `The project "${task.project}" is not on ${to} yet: nothing at ${target.noCheckout}. Clone it there and install its dependencies (remote/bootstrap.sh project <id> <git-url>)`);
     return blockers;
   }
   if (target.error) {
