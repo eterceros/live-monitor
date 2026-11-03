@@ -1223,7 +1223,7 @@ export default function App() {
           onDismiss={() => setTaskDialog(null)}
         />
       )}
-      {dialogTask && taskDialog.kind === 'plan' && dialogTask.workPlan && (
+      {dialogTask && taskDialog.kind === 'plan' && dialogTask.workPlan && !dialogTask.workPlan.slim && (
         <PlanReview
           plan={dialogTask.workPlan}
           who={`#${dialogTask.issue}`}
