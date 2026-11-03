@@ -2129,7 +2129,17 @@ function startConflictResolution(task) {
     })
     .finally(() => {
       running.delete(key);
-      if (task.state === 'resolving_conflicts') store.setState(task, task.conflictRun?.from ?? 'pr_draft');
+      // Not only `resolving_conflicts`: the suite this resolution runs
+      // (`testPhase`) walks the card through `testing` and `fixing`, and a run
+      // that threw there left the card standing in one of them with nothing
+      // running — a ghost the closed-issue rule would not touch for ever ("a run
+      // in flight is never interrupted"), as #686 of EHR showed. This run owned
+      // the card, so it puts it back where it rested; the `phase` a repair round
+      // left goes too, or no later reopen of the issue could be taken.
+      if (ACTIVE_STATES.includes(task.state)) {
+        if (task.state !== 'resolving_conflicts') task.phase = null;
+        store.setState(task, task.conflictRun?.from ?? 'pr_draft');
+      }
       store.touch(task);
       refreshBranchStatus(task, { force: true }).catch(() => {});
       tick();

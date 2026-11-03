@@ -282,6 +282,29 @@ test('tests en rojo tras resolver: se deshace y no se sube nada', async () => {
   assert.match(task.conflictRun.reason, /still fail/);
 });
 
+test('la suite de la resolución deja la tarjeta en «fixing» y falla: vuelve a su estado, sin fase ni fantasma (EHR #686)', async () => {
+  const task = taskOf({ state: 'pr_draft', issueClosed: true });
+  fakes();
+  // The repair loop of the real suite moves the card to `fixing` and then throws
+  // (the fix session ended without committing: the work is already in main).
+  conflictHooks.testPhase = async (t) => {
+    store.setState(t, 'fixing');
+    t.phase = 'fixing';
+    throw new Error('The fix session ended without committing: the branch is the same as origin/main');
+  };
+  await withAutostart(async () => {
+    conflictTick();
+    for (let i = 0; i < 200 && (task.state === 'resolving_conflicts' || task.state === 'fixing'); i += 1) await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  assert.equal(task.state, 'pr_draft', 'no se queda en un estado activo sin nadie que corra');
+  assert.equal(task.phase, null, 'la fase que dejó la ronda de reparación se va con ella');
+  assert.equal(task.conflictRun.status, 'needs_attention');
+  // With the ghost gone, the closed issue settles the card like any other idle one.
+  assert.equal(pipeline.completeOnIssueClosed(task), 'done');
+  assert.equal(task.state, 'done');
+});
+
 test('un push rechazado también deshace', async () => {
   const task = taskOf();
   const calls = fakes({ pushFails: true });
