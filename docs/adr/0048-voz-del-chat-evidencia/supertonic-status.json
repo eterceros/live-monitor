@@ -1,0 +1,98 @@
+{
+ "engine": "supertonic",
+ "model_id": "Supertone/supertonic-3 @724fb5abbf5502583fb520898d45929e62f02c0b (via supertonic-py 1.3.1 pinned commit df0f968)",
+ "license": "Code MIT; model weights OpenRAIL-M (Supertone/supertonic-3, LICENSE in model/). Restrictions (Attachment A, must be passed on to downstream users/derivatives): no illegal use; no harming minors; no false info to harm; no PII to harm; machine-generated content must be disclosed as such; no defamation/harassment; no impersonation/deepfakes without consent; no fully automated decisions affecting legal rights; no discrimination; no exploiting vulnerable groups; no medical advice; no justice/law-enforcement/immigration profiling. Commercial use allowed.",
+ "languages_covered": [
+  "es",
+  "en"
+ ],
+ "samples": [
+  {
+   "file": "samples/es-F1.wav",
+   "lang": "es",
+   "voice": "F1",
+   "synth_seconds": 12.41,
+   "audio_seconds": 8.71
+  },
+  {
+   "file": "samples/en-F1.wav",
+   "lang": "en",
+   "voice": "F1",
+   "synth_seconds": 14.34,
+   "audio_seconds": 9.06
+  },
+  {
+   "file": "samples/es-F2.wav",
+   "lang": "es",
+   "voice": "F2",
+   "synth_seconds": 12.85,
+   "audio_seconds": 8.15
+  },
+  {
+   "file": "samples/en-F2.wav",
+   "lang": "en",
+   "voice": "F2",
+   "synth_seconds": 12.33,
+   "audio_seconds": 8.5
+  },
+  {
+   "file": "samples/es-F3.wav",
+   "lang": "es",
+   "voice": "F3",
+   "synth_seconds": 11.54,
+   "audio_seconds": 8.99
+  },
+  {
+   "file": "samples/en-F3.wav",
+   "lang": "en",
+   "voice": "F3",
+   "synth_seconds": 11.28,
+   "audio_seconds": 9.33
+  },
+  {
+   "file": "samples/es-F4.wav",
+   "lang": "es",
+   "voice": "F4",
+   "synth_seconds": 10.88,
+   "audio_seconds": 7.45
+  },
+  {
+   "file": "samples/en-F4.wav",
+   "lang": "en",
+   "voice": "F4",
+   "synth_seconds": 10.98,
+   "audio_seconds": 7.73
+  },
+  {
+   "file": "samples/es-M1.wav",
+   "lang": "es",
+   "voice": "M1",
+   "synth_seconds": 12.24,
+   "audio_seconds": 8.71
+  },
+  {
+   "file": "samples/en-M1.wav",
+   "lang": "en",
+   "voice": "M1",
+   "synth_seconds": 13.44,
+   "audio_seconds": 9.06
+  },
+  {
+   "file": "samples/es-M2.wav",
+   "lang": "es",
+   "voice": "M2",
+   "synth_seconds": 12.49,
+   "audio_seconds": 8.57
+  },
+  {
+   "file": "samples/en-M2.wav",
+   "lang": "en",
+   "voice": "M2",
+   "synth_seconds": 12.57,
+   "audio_seconds": 8.85
+  }
+ ],
+ "works_on_windows": true,
+ "failures": [],
+ "notes": "CPU ONNX Runtime, Python 3.12. Upstream repo supertone-inc/supertonic is ARCHIVED (development and support ended); package source is supertone-oss-archive/supertonic-py. 10 voices exist (F1-F5, M1-M5); samples made with F1-F4, M1, M2. Timings were slower than realtime on CPU (~1.4x audio length), machine shared with other agents. French/German skipped by owner scope change. No sound-quality claim made."
+}

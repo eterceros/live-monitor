@@ -1,0 +1,56 @@
+{
+ "engine": "melo",
+ "model_id": "myshell-ai/MeloTTS-Spanish, myshell-ai/MeloTTS-English (melotts 0.1.2 from GitHub main)",
+ "license": "MIT (code and models)",
+ "languages_covered": [
+  "es",
+  "en"
+ ],
+ "samples": [
+  {
+   "file": "samples/es-ES.wav",
+   "lang": "es",
+   "voice": "ES",
+   "synth_seconds": 11.88,
+   "audio_seconds": 9.18
+  },
+  {
+   "file": "samples/en-EN-US.wav",
+   "lang": "en",
+   "voice": "EN-US",
+   "synth_seconds": 24.14,
+   "audio_seconds": 8.44
+  },
+  {
+   "file": "samples/en-EN-BR.wav",
+   "lang": "en",
+   "voice": "EN-BR",
+   "synth_seconds": 3.95,
+   "audio_seconds": 7.34
+  },
+  {
+   "file": "samples/en-EN_INDIA.wav",
+   "lang": "en",
+   "voice": "EN_INDIA",
+   "synth_seconds": 4.35,
+   "audio_seconds": 7.91
+  },
+  {
+   "file": "samples/en-EN-AU.wav",
+   "lang": "en",
+   "voice": "EN-AU",
+   "synth_seconds": 4.52,
+   "audio_seconds": 8.15
+  },
+  {
+   "file": "samples/en-EN-Default.wav",
+   "lang": "en",
+   "voice": "EN-Default",
+   "synth_seconds": 4.01,
+   "audio_seconds": 7.04
+  }
+ ],
+ "works_on_windows": true,
+ "failures": [],
+ "notes": "First approach worked (Python 3.10 venv, pip install git+https://github.com/myshell-ai/MeloTTS.git, CPU). Two local fixes needed: pip install 'setuptools<81' (librosa needs pkg_resources: ModuleNotFoundError: No module named 'pkg_resources') and pip uninstall unidic (MeCab 'Failed initializing MeCab ... no such file or directory ...unidic\\dicdir\\mecabrc'; falls back to unidic-lite). First synth of each language includes model load/warm-up (es 11.88s, en-US 24.14s); later ones ~4s. French/German skipped by owner scope change. No sound-quality claim made."
+}
