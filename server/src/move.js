@@ -835,8 +835,9 @@ async function sourceGit(task, moving, source, onLine) {
   }
   if (pw.otherDirty) log(task, `(${pw.otherDirty} dirty file(s) the branch does not touch stay on ${moving.from})`);
   if (pw.unpushed !== 0 || sha) {
-    // Never forced: a push origin refuses stops the move with git's reason.
-    await withInfraRetries(task, 'mudanza', 'the push', () => pushBranch(source, sourceWt, branch, { onLine }));
+    // Never forced, and not merged either: a push origin refuses stops the move
+    // with git's reason and leaves the branch as it was (`integrate: false`).
+    await withInfraRetries(task, 'mudanza', 'the push', () => pushBranch(source, sourceWt, branch, { onLine, integrate: false }));
     log(task, `branch ${branch} pushed to origin`);
   }
 }
