@@ -117,6 +117,7 @@ test('si el merge choca: se aborta, el worktree queda como estaba y origin no ca
   await assert.rejects(
     () => pushBranch(w.board.m, wt, branch),
     (e) => e.code === 'PUSH_DIVERGED' && /conflicts in mine\.txt/.test(e.message) && /nothing was forced/.test(e.message)
+      && /ask the chat .*merge origin\/feat\/3-tres into this branch.*do not rebase or force-push/.test(e.message)
       && e.remoteOnly.length === 2 && e.remoteOnly[0].author === 'Otra Persona',
   );
   assert.equal(await mergeInProgress(w.board.m, wt), false, 'no queda un merge a medias');
