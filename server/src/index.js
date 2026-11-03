@@ -252,6 +252,11 @@ const publicTask = (t, known = machines()) => {
     // on every tool call, to every open board is kilobytes nobody draws.
     prBody: undefined,
     hasPrBody: Boolean(t.prBody),
+    // Plans the pipeline keeps for its own sessions; no card or dialog reads
+    // them, and together they were a fifth of the state sent to every board.
+    advisorPlan: undefined,
+    triagePlan: undefined,
+    triageSummary: undefined,
     // Same reason as `prBody` above, and the reason `GET …/close/draft`
     // exists: a closing comment is a document — four sections with file paths
     // in them — and shipping it with every card, on every tool call, to every
