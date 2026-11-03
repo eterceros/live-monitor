@@ -218,6 +218,15 @@
 .move-blockers .lifted .move-blocker-text { text-decoration: line-through; color: var(--muted); }
 /* The stop button is a `btn-danger btn-icon`; only its place in the row is ours. */
 .move-blockers .dlg-a-stop { flex: none; }
+.move-blockers .move-prepare-row { align-items: flex-start; }
+.move-prepare { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; }
+.move-prepare-step { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.move-prepare-log {
+  margin: 0; padding: 6px 8px; width: 100%; max-height: 7.5em; overflow: auto;
+  font-family: var(--mono, monospace); font-size: var(--fs-xs); color: var(--muted);
+  background: var(--bg-sunken, transparent); border-radius: var(--r-sm); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.move-prepare-error { color: var(--red); }
 .move-stopping { flex: none; color: var(--muted); font-size: var(--fs-xs); font-style: italic; white-space: nowrap; }
 .move-discard { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: var(--fs-sm); color: var(--text); cursor: pointer; }
 .move-discard input,
