@@ -353,16 +353,39 @@ export function requireProject(projectId, fn) {
   return projectId;
 }
 
+/** Where a runner keeps checkouts unless `projectsRoot` says otherwise: `~/src` of its own user. */
+export const DEFAULT_PROJECTS_ROOT = '~/src';
+
+/**
+ * The root a runner's checkouts live under, as an absolute path on that box, or
+ * null when there is none (`projectsRoot: false`) or it cannot be known yet.
+ * A leading `~` is the home of the user the runner runs as, which the runner
+ * reports in `/info`; a board that has not heard from it yet has no answer.
+ */
+function projectsRootOf(name) {
+  const spec = config.machines?.[name];
+  if (spec?.kind !== 'runner') return null;
+  const declared = spec.projectsRoot === undefined ? DEFAULT_PROJECTS_ROOT : spec.projectsRoot;
+  if (typeof declared !== 'string' || !declared.trim()) return null;
+  const root = declared.trim().replace(/\/+$/, '');
+  if (root !== '~' && !root.startsWith('~/')) return root || '/';
+  const home = machines()[name]?.home;
+  if (typeof home !== 'string' || !home) return null;
+  return `${home.replace(/\/+$/, '')}${root.slice(1)}`;
+}
+
 /**
  * The checkout a runner holds for a project, or null: `{repoPath, worktreeRoot}`.
  *
  * An entry in `config.machines[name].projects[projectId]` wins (both paths
- * required). Otherwise, when the runner declares `projectsRoot`, the paths
- * follow a convention: `<projectsRoot>/<folder>` and `<projectsRoot>/<folder>-wt`,
+ * required). Otherwise the paths follow a convention under the runner's
+ * `projectsRoot` (default `~/src`, the runner user's own home — never a path of
+ * the person who wrote the config): `<root>/<folder>` and `<root>/<folder>-wt`,
  * where `<folder>` is the last segment of the project's own `repoPath` on the
  * board — not the GitHub repo name, which does not always match the folder
- * (`EHR`, `MPSIA-TPOS-ACADEMIASYS`). Whether the checkout is actually there is
- * a different question, answered by the move preflight.
+ * (`EHR`, `MPSIA-TPOS-ACADEMIASYS`). `projectsRoot: false` turns the convention
+ * off. Whether the checkout is actually there is a different question, answered
+ * by the move preflight.
  */
 export function declaredProject(name, projectId) {
   const spec = config.machines?.[name];
@@ -370,11 +393,11 @@ export function declaredProject(name, projectId) {
   if (explicit?.repoPath && explicit?.worktreeRoot) {
     return { repoPath: explicit.repoPath, worktreeRoot: explicit.worktreeRoot };
   }
-  if (spec?.kind !== 'runner' || typeof spec.projectsRoot !== 'string' || !spec.projectsRoot.trim()) return null;
+  const root = projectsRootOf(name);
+  if (!root) return null;
   const project = projectOf(projectId);
   const folder = String(project?.repoPath ?? '').split(/[\\/]+/).filter(Boolean).pop();
   if (!folder) return null;
-  const root = spec.projectsRoot.trim().replace(/\/+$/, '');
   return { repoPath: `${root}/${folder}`, worktreeRoot: `${root}/${folder}-wt` };
 }
 
@@ -426,7 +449,7 @@ export function machineFor(name, projectId) {
     if (!declared) {
       throw new Error(
         `Project "${projectId}" is not declared on machine "${name}": `
-        + 'declare it under machines.<name>.projects or set machines.<name>.projectsRoot, or only the default project runs there',
+        + 'declare it under machines.<name>.projects, or let the ~/src convention of the runner apply (projectsRoot); until the runner has reported its home, only the default project runs there',
       );
     }
     // Not `Object.create(base)`: RunnerMachine keeps its plumbing in #private
