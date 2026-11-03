@@ -6131,9 +6131,12 @@ export function chatSessionTuning(task, chat, role, { stage = role, cfg = cfgOf(
  * the level the session will actually get, or null (auto, or a model with no
  * effort at all).
  */
-export function chatEffectiveEffort(task, chat) {
+export function chatEffectiveEffort(task, chat, cfg) {
+  // `cfg` when the caller already has the task's merged config: it is the
+  // expensive part, and the board asks once per chat of every task.
+  if (cfg === null) return null;
   try {
-    const t = chatSessionTuning(task, chat, 'chat');
+    const t = chatSessionTuning(task, chat, 'chat', cfg ? { cfg } : undefined);
     return t.effort ? (clampEffort(t.model, t.effort, t.available) ?? null) : null;
   } catch { return null; }
 }

@@ -27,7 +27,7 @@ import { registerIssueDraftRoutes } from './issuedraft.js';
 import { HOLDER_TAB } from './chattabs.js';
 import { machineOf, machines } from './machine.js';
 import { DEFAULT_PROJECT_ID, coerceKey, keyOf, makeKey, parseKey } from './keys.js';
-import { listProjects, projectOf, saveProjects, configFor, setReviewerChoice, setProjectDesign, setProjectRestricted, removeProject, removedProjectFor, forgetRemovedProject, setGhAccount } from './projects.js';
+import { listProjects, projectOf, saveProjects, configFor, configSectionFor, setReviewerChoice, setProjectDesign, setProjectRestricted, removeProject, removedProjectFor, forgetRemovedProject, setGhAccount } from './projects.js';
 import { ghTokenFor, identityIssues, ghAccounts, defaultGhLogin } from './gh-account.js';
 import { overridesOf, detectProfile, detectDefaultBranch, isProfileId } from './profiles.js';
 import { tuningSnapshot, setTuning } from './tuning.js';
@@ -170,8 +170,26 @@ app.use(express.static(path.join(ROOT, 'web', 'dist')));
  */
 const refOf = (t) => coerceKey(t.issue, t.project ?? DEFAULT_PROJECT_ID); // allowlisted: a legacy row read before adoption has no project
 
+// The merged config of a project, shared by every task and chat that asks for
+// it while the board builds one snapshot: each card reads the effort of its
+// chats from it, and a deep clone per task (nearly four hundred of them) was the
+// biggest cost of the state. Read-only, and dropped as soon as the synchronous
+// pass is over, so a changed config is never served; `null` for an unknown project.
+const publicConfigs = new Map();
+function publicConfigOf(projectId) {
+  let cfg = publicConfigs.get(projectId);
+  if (cfg === undefined) {
+    try { cfg = configFor(projectId); } catch { cfg = null; }
+    publicConfigs.set(projectId, cfg);
+    if (publicConfigs.size === 1) queueMicrotask(() => publicConfigs.clear());
+  }
+  return cfg;
+}
+
 /** The per-chat public fields of a task or a project-chat holder: no messages. */
-const publicChats = (t) => chatsOf(t).map((c) => ({
+const publicChats = (t) => {
+  const cfgOnce = () => publicConfigOf(t.project ?? DEFAULT_PROJECT_ID); // allowlisted: legacy row without project
+  return chatsOf(t).map((c) => ({
     id: c.id,
     title: c.title,
     model: c.model,
@@ -184,7 +202,7 @@ const publicChats = (t) => chatsOf(t).map((c) => ({
     // once clamped to the model, and when its last turn ended (the cache is warm
     // for about five minutes after).
     thinking: c.thinking ?? null,
-    effectiveEffort: chatEffectiveEffort(t, c),
+    effectiveEffort: chatEffectiveEffort(t, c, cfgOnce()),
     lastTurnAt: c.lastTurnAt ?? null,
     messageCount: c.messages.length,
     planMode: c.planMode === true,
@@ -201,6 +219,7 @@ const publicChats = (t) => chatsOf(t).map((c) => ({
       summary: c.plan.tasks.map((x) => `${x.id}:${x.status}${x.attempts > 1 ? `×${x.attempts}` : ''}`).join(' '),
     } : null,
   }));
+};
 
 /** The totals of a task's spans, without the per-phase breakdown; null for a task with no spans. */
 function timingSummary(t) {
@@ -394,7 +413,7 @@ function runningOf(t, chats) {
 /** Whether the task's project has a stack to start; an unknown project has none. */
 function hasStackOf(t) {
   try {
-    return (configFor(t.project ?? DEFAULT_PROJECT_ID)?.stack ?? null) !== null; // allowlisted: legacy row without project
+    return (configSectionFor(t.project ?? DEFAULT_PROJECT_ID, 'stack') ?? null) !== null; // allowlisted: legacy row without project
   } catch {
     return false;
   }

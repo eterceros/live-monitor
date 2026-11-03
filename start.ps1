@@ -32,7 +32,7 @@ if ($Launch) {
         Remove-Item -LiteralPath ("Env:" + $e.Name) -ErrorAction SilentlyContinue
       }
     }
-    $proc = Start-Process node -ArgumentList 'src/index.js' `
+    $proc = Start-Process node -ArgumentList '--max-old-space-size=8192', 'src/index.js' `
       -WorkingDirectory (Join-Path $root 'server') `
       -WindowStyle Hidden -PassThru `
       -RedirectStandardOutput $logFile `

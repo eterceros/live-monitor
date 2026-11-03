@@ -62,7 +62,7 @@ const ALLOWLIST = {
   'prompt-invariants.js': [2, 'import + documented "no project given means the default" constant'],
   'files.js': [5, 'import + allowedRoots comparison + legacy chat task fallback + legacy bare-issue route + comparison'],
   'pipeline.js': [2, 'import + legacy rows without project in the PR-checks sweep (one reader)'],
-  'index.js': [10, 'import + route layer: legacy clients (bare issue, /api/preview), board-wide tuning, empty-registry fallback, legacy rows'],
+  'index.js': [11, 'import + route layer: legacy clients (bare issue, /api/preview), board-wide tuning, empty-registry fallback, legacy rows'],
 };
 
 test('no function parameter defaults to DEFAULT_PROJECT_ID', () => {
