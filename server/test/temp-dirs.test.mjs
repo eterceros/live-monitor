@@ -100,6 +100,7 @@ const ALLOWLIST = {
   'web-build.test.mjs': [1, `vite outDir; ${OWN_FINALLY}`],
   'worktree-branch.test.mjs': [1, `git fixture; ${OWN_T_AFTER}`],
   'worktree-move.test.mjs': [2, `git fixtures and a size scratch; ${OWN_T_AFTER}`],
+  'worktree-push-diverged.test.mjs': [1, `git fixture (bare origin and two clones); ${OWN_T_AFTER}`],
   'worktree-remove.test.mjs': [1, `git fixture; ${OWN_T_AFTER}`],
   'zen-proxy.test.mjs': [1, `scratch; ${OWN_AFTER}`],
 };

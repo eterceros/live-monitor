@@ -31,6 +31,7 @@ import { listProjects, projectOf, saveProjects, configFor, configSectionFor, set
 import { ghTokenFor, identityIssues, ghAccounts, defaultGhLogin } from './gh-account.js';
 import { overridesOf, detectProfile, detectDefaultBranch, isProfileId } from './profiles.js';
 import { tuningSnapshot, setTuning } from './tuning.js';
+import { publicWorkPlan } from './publicplan.js';
 import { detectRepo, detectGhUser } from './repo-identity.js';
 import { movePreflight, moveTask, retryMove, discardMove, removePlace } from './move.js';
 import { resolvedModels } from './models.js';
@@ -325,15 +326,7 @@ const publicTask = (t, known = machines()) => {
     } : null,
     planRejectedText: undefined,
     planFeedback: undefined,
-    workPlan: t.workPlan?.status ? {
-      id: t.workPlan.id, version: t.workPlan.version ?? null, feedback: t.workPlan.feedback ?? null, status: t.workPlan.status, text: t.workPlan.text, waves: t.workPlan.waves, selected: t.workPlan.selected,
-      tasks: t.workPlan.tasks.map((x) => ({
-        id: x.id, what: x.what, files: x.files, dependsOn: x.dependsOn, check: x.check, status: x.status,
-        attempts: x.attempts, extraRetries: x.extraRetries ?? 0, startedAt: x.startedAt, endedAt: x.endedAt,
-        lastFailure: x.lastFailure ? { kind: x.lastFailure.kind, output: String(x.lastFailure.output ?? '').split(/\r?\n/).slice(-20).join('\n') } : null,
-        summary: x.summary ? String(x.summary).slice(0, 400) : null,
-      })),
-    } : null,
+    workPlan: t.workPlan?.status ? publicWorkPlan(t.workPlan) : null,
     // Waiting for the account's quota to come back. Deliberately NOT part of
     // `awaitingYou`: nobody can act on it, so no card wears a ❓ for it.
     // `previousError` stays on the server — the card has nothing to do with it.
