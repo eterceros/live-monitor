@@ -111,6 +111,23 @@ test('configFor aplica los overrides encima y NO muta el config global', async (
   assert.notEqual(config.limits.defaultMaxActiveTasks, 99);
 });
 
+test('configSectionFor da lo mismo que configFor(id)[sección], y también es nuevo cada vez', async () => {
+  const { configFor, configSectionFor } = await withProjectsFile([
+    entry({ overrides: { limits: { defaultMaxActiveTasks: 5 }, stack: { servers: [] } } }),
+    entry({ id: 'gamma', overrides: {} }),
+  ]);
+  for (const id of ['beta', 'gamma']) {
+    for (const section of ['limits', 'stack', 'github', 'claude', 'e2e', 'noExiste']) {
+      assert.deepEqual(configSectionFor(id, section), configFor(id)[section], `${id}.${section}`);
+    }
+  }
+  const a = configSectionFor('beta', 'limits');
+  a.defaultMaxActiveTasks = 1;
+  assert.equal(configSectionFor('beta', 'limits').defaultMaxActiveTasks, 5, 'tocar uno no toca al siguiente');
+  assert.notEqual(config.limits.defaultMaxActiveTasks, 1, 'ni al config global');
+  assert.throws(() => configSectionFor('nadie', 'stack'), /no project is registered/);
+});
+
 test('dos llamadas a configFor devuelven objetos distintos, hasta en las ramas', async () => {
   const { configFor } = await withProjectsFile([entry({ overrides: { limits: { defaultMaxActiveTasks: 3 } } })]);
 

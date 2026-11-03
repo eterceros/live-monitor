@@ -2,7 +2,7 @@ import { store } from './store.js';
 import { machineOf, machineViewFor } from './machine.js';
 import { isRunnerOffline } from './runner-client.js';
 import { serviceEnv } from './stack-env.js';
-import { configFor } from './projects.js';
+import { configSectionFor } from './projects.js';
 import { keyOf } from './keys.js';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -65,7 +65,7 @@ const reservedOn = (machine) => {
  *   project vanished from the registry must not silently run on hfs's stack.
  */
 export function stackConfig(projectId) {
-  return configFor(projectId).stack ?? null;
+  return configSectionFor(projectId, 'stack') ?? null;
 }
 
 /** What to say when a project has no servers to run. Clear beats a `TypeError`. */

@@ -447,6 +447,29 @@ export function configFor(id) {
 }
 
 /**
+ * One section of {@link configFor}, without cloning the rest of the
+ * configuration: the board asks for a single section once per task and per chat
+ * every time it builds its state, and a deep clone of everything for each of
+ * them was most of the time it took. Same result as `configFor(id)[section]`,
+ * and just as fresh: a new object, never a cached one.
+ *
+ * @param {string} id
+ * @param {string} section a top-level key of the configuration.
+ * @returns {*} the merged section, or `undefined` when neither side has it.
+ * @throws {Error} if no project is registered under `id`.
+ */
+export function configSectionFor(id, section) {
+  const project = projectOf(id);
+  if (!project) {
+    throw new Error(`configFor: no project is registered as ${JSON.stringify(id ?? null)}`);
+  }
+  const over = project.overrides ?? {};
+  if (REPLACED_WHOLE.includes(section) && Object.hasOwn(over, section)) return structuredClone(over[section]);
+  const base = config[section] === undefined ? {} : { [section]: structuredClone(config[section]) };
+  return mergeInto(base, Object.hasOwn(over, section) ? { [section]: over[section] } : {})[section];
+}
+
+/**
  * Writes the registry to `server/data/projects.json`, validating it first.
  *
  * The only function in this module that touches disk for writing, and the only
