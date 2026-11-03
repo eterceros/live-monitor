@@ -6,6 +6,9 @@
 #   git        commit identity + a signed commit made without anyone at the keyboard
 #   playwright the e2e suite's dependencies and Chromium
 #   runner     this repo, its dependencies, and the runner as a user service
+#   project    another project on this box: `bootstrap.sh project <id> <git-url>`
+#              clones it to ~/src/<name>, installs its dependencies and prints
+#              the `projects` entry for the board's config.json
 #   all        (default) every stage above, in that order
 #
 # What it needs: sudo, `claude` already logged in (`claude auth status`), `gh`
@@ -20,7 +23,7 @@ RUNNER_PORT="${RUNNER_PORT:-7421}"
 GIT_NAME="${GIT_NAME:-$(git config --global user.name 2>/dev/null || true)}"
 GIT_EMAIL="${GIT_EMAIL:-$(git config --global user.email 2>/dev/null || true)}"
 # Must match the SDK the board runs: SDK 0.3.N pairs with CLI 2.1.N.
-CLAUDE_VERSION_WANTED="${CLAUDE_VERSION_WANTED:-2.1.316}"
+CLAUDE_VERSION_WANTED="${CLAUDE_VERSION_WANTED:-2.1.317}"
 # Must match config.json `qa.mcpVersion` on the board.
 MCP_VERSION="${MCP_VERSION:-0.0.80}"
 
@@ -179,6 +182,34 @@ JSON
 JSON
 }
 
+# A second (third…) project on the same box. The runner is path-agnostic: the
+# board sends absolute paths, so all it takes is a checkout here and a
+# `machines.<name>.projects.<id>` entry on the board.
+stage_project() {
+  local id="${1:-}" url="${2:-}"
+  [ -n "$id" ] && [ -n "$url" ] || die "usage: bootstrap.sh project <id> <git-url>   (e.g. ehr git@github.com:eterceros/EHR.git)"
+  say "project: $id"
+  local name dir wt
+  name="$(basename "$url" .git)"
+  dir="${PROJECT_DIR:-$HOME/src/$name}"
+  wt="${PROJECT_WT:-$dir-wt}"
+  if [ -d "$dir/.git" ]; then git -C "$dir" fetch --all --prune; else git clone "$url" "$dir"; fi
+  mkdir -p "$wt"
+  ok "checkout $dir, worktrees $wt"
+  # pnpm monorepos (EHR): corepack ships with Node and reads packageManager.
+  if [ -f "$dir/pnpm-lock.yaml" ]; then
+    command -v pnpm >/dev/null || sudo corepack enable
+    (cd "$dir" && pnpm install --frozen-lockfile)
+    ok "pnpm $(pnpm --version)"
+  elif [ -f "$dir/package-lock.json" ]; then
+    (cd "$dir" && npm ci --no-audit --no-fund)
+  fi
+  say "add this under machines.\"$(hostname)\" in the board's config.json"
+  cat <<JSON
+"projects": { "$id": { "repoPath": "$dir", "worktreeRoot": "$wt" } }
+JSON
+}
+
 # Models are configured by family (`opus`, `sonnet`…) and the CLI resolves each
 # to the newest version it knows — so staying on the newest models means
 # keeping the CLI here and the SDK on the laptop at the same, current
@@ -212,6 +243,7 @@ case "$stage" in
   playwright) stage_playwright ;;
   runner)     stage_runner ;;
   update)     stage_update ;;
+  project)    shift; stage_project "$@" ;;
   all)        stage_network; stage_git; stage_playwright; stage_runner ;;
-  *) die "unknown stage '$stage' (network|git|playwright|runner|update|all)" ;;
+  *) die "unknown stage '$stage' (network|git|playwright|runner|project|update|all)" ;;
 esac
