@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { api } from '../../api.js';
 import Icon from '../Icon.jsx';
 import Markdown from '../Markdown.jsx';
 import { splitVoice } from '../../voice.js';
+import { VoiceReplayContext } from '../../voiceReplay.js';
 import Stamp from '../Stamp.jsx';
 import LiveDot from '../ui/LiveDot.jsx';
 import { laneSummary } from '../PlanReview.jsx';
@@ -137,6 +138,7 @@ export function PendingBubble({ message: m, pending, onOpen }) {
 /** One of your messages or Claude's, with its attachments and delivery note. */
 export function MessageBubble({ m }) {
   const t = useStrings();
+  const replay = useContext(VoiceReplayContext);
   const mine = m.role === 'user';
   // Claude's `<voz>` summaries (see voice.js) come out of the text and are shown apart.
   const voice = m.role === 'assistant' ? splitVoice(m.text) : null;
@@ -151,11 +153,22 @@ export function MessageBubble({ m }) {
         className={`${mine ? 'cb-user' : 'cb-claude bubble-md'}${m.boardOnly ? ' cb-board-only' : ''}`}
         title={m.boardOnly ? t.chat.bubbles.boardOnlyTitle : undefined}
       >
-        {voice?.spoken.map((s, i) => (
-          <div key={i} className="cb-voice" role="note">
-            <span className="cb-voice-tag"><Icon name="volume" /> {t.chat.bubbles.spoken}</span> {s}
-          </div>
-        ))}
+        {voice?.spoken.map((s, i) => {
+          // The button reads this block again; while it is the one being read, it stops it.
+          const id = `${m.id}:${i}`;
+          const reading = replay?.speaking && replay.replayId === id;
+          return (
+            <div key={i} className="cb-voice" role="note">
+              <span className="cb-voice-tag"><Icon name="volume" /> {t.chat.bubbles.spoken}</span> {s}
+              {replay?.supported && (
+                <button type="button" className={`btn btn-icon btn-sm cb-voice-play${reading ? ' on' : ''}`}
+                  aria-pressed={reading} aria-label={reading ? t.chat.bubbles.replayStop : t.chat.bubbles.replay}
+                  title={reading ? t.chat.bubbles.replayStop : t.chat.bubbles.replay}
+                  onClick={() => (reading ? replay.stop() : replay.replay(id, [s]))}><Icon name={reading ? 'stop' : 'play'} /></button>
+              )}
+            </div>
+          );
+        })}
         {voice ? (voice.text ? <Markdown text={voice.text} /> : null) : m.text}
         {m.attachments?.length > 0 && (
           <div className="cb-attached">{m.attachments.map((a) => <span key={a}><Icon name="paperclip" /> {a}</span>)}</div>

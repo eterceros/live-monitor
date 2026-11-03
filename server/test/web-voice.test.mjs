@@ -223,6 +223,25 @@ test('el cableado: el micrófono de las órdenes escucha en el idioma del navega
   assert.match(panel, /wasListening\.current && !dictation\.listening && handsFree\.phase === 'off' && detailCommand\(text\) && ready && !sending && !files\.length\) send\(\)/);
 });
 
+test('escuchar de nuevo: lastSpokenReply toma la última respuesta con resumen, y el cableado ofrece el botón en el resumen y en el compositor', async () => {
+  const { lastSpokenReply } = await import('../../web/src/voiceReplay.js');
+  const messages = [
+    { id: 'a', role: 'assistant', text: '<voz>Primero.</voz>' },
+    { id: 'b', role: 'user', text: 'hola' },
+    { id: 'c', role: 'assistant', text: 'sin resumen' },
+  ];
+  assert.deepEqual(lastSpokenReply(messages, splitVoice), { id: 'a', spoken: ['Primero.'] }, 'salta lo que no se habla');
+  assert.equal(lastSpokenReply([{ id: 'x', role: 'assistant', text: 'nada' }], splitVoice), null);
+  assert.equal(lastSpokenReply([], splitVoice), null);
+  const panel = src('components/ChatPanel.jsx');
+  assert.match(panel, /<VoiceReplayContext\.Provider value=\{replayValue\}>/);
+  assert.match(panel, /onClick=\{\(\) => replay\(lastSpoken\.id, lastSpoken\.spoken\)\}/, 'el botón del compositor');
+  assert.match(panel, /handsFree\.end\(\);\s*dictation\.abort\(\);\s*primeSpeech\(\);/, 'repetir corta el ciclo, el dictado y desbloquea el móvil');
+  const bubbles = src('components/chat/ChatBubbles.jsx');
+  assert.match(bubbles, /replay\.replay\(id, \[s\]\)/, 'el botón del resumen');
+  assert.match(bubbles, /className=\{`btn btn-icon btn-sm cb-voice-play/);
+});
+
 test('el toque que enciende el altavoz y el que envía desbloquean la voz del móvil', () => {
   const speech = src('useSpeech.js');
   assert.match(speech, /export function primeSpeech\(\)/);
