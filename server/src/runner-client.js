@@ -129,6 +129,8 @@ function noteHealth(name, online, { reason = null, error = null } = {}) {
  */
 export class RunnerMachine {
   kind = 'runner';
+  /** The runner user's home, learned from `/info`; null until the first answer. */
+  home = null;
 
   constructor(name, { url, token, repoPath, worktreeRoot, binSuffix = '' }) {
     if (!url || !token) throw new Error(`machines.${name}: url and token are required`);
@@ -304,7 +306,15 @@ export class RunnerMachine {
   /** The Zen proxy's port on the runner — loopback *there*, for the CLI there. */
   async zenProxyPort() { return (await this.#json('/zen-proxy/ensure', {})).port; }
 
-  async info() { return this.#json('/info', undefined, { method: 'GET' }); }
+  /**
+   * What the runner says about itself. Its `home` is remembered: a `~` in
+   * `projectsRoot` is that user's home on the box, which only the box knows.
+   */
+  async info() {
+    const info = await this.#json('/info', undefined, { method: 'GET' });
+    if (typeof info?.home === 'string' && info.home) this.home = info.home;
+    return info;
+  }
 
   /**
    * Uploads a local file so a Claude session on the runner can Read it.

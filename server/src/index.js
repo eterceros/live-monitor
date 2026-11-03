@@ -1895,6 +1895,8 @@ server.listen(config.port, bootHost, () => {
   console.log(`plantillas de prompt validadas: ${promptCount}`);
   // What a crash or a restart left in the trash of a worktree root (`trash.js`).
   if (process.platform === 'win32') for (const p of listProjects()) if (p.worktreeRoot) void reapTrash(p.worktreeRoot);
+  // A runner's `~` (where its checkouts live) is only known once it has answered.
+  for (const m of Object.values(machines())) if (m.kind === 'runner') void m.info().catch(() => {});
   startPolling();
   startUsageProbe();
   tick();
