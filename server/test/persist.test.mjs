@@ -31,7 +31,11 @@ test('el arranque deja el archivo escrito sin esperar a nada', () => {
 
 test('una ráfaga de cambios se escribe una sola vez', async () => {
   const task = store.addTask(issue(1), 'hfs');
-  await esperar(300);                       // que asiente lo del alta
+  // Que asiente lo del alta. Esperando a que aparezca, no un tiempo fijo: con el
+  // fsync de cada archivo (durable.js) la escritura ya no cabe en los 50 ms que
+  // quedaban entre la ventana de 250 ms y los 300 de antes.
+  for (let i = 0; i < 100 && !enDisco()['1']; i++) await esperar(20);
+  await esperar(50);
 
   // La forma real de un turno: una entrada de log por llamada a herramienta.
   const antes = enDisco()['1'].log.length;

@@ -119,6 +119,8 @@ export function loadProjectChats() {
   const read = reportRead(f, readJsonDurable(f, { generations: GENERATIONS }), 'The project chats');
   if (read.status !== 'ok') return;
   const raw = read.value;
+  // Read from its previous version: the damaged file is aside, the name is written again soon.
+  if (read.source !== f) { dirty = true; if (!timer) arm(); }
   for (const [key, holder] of Object.entries(raw?.holders ?? {})) {
     if (!holder || typeof holder !== 'object' || holder.kind !== 'project') continue;
     const parsed = parseHolderKey(key);
@@ -158,6 +160,10 @@ function loadHeavy(f, key, holder) {
   const r = readHeavy(DATA_DIR, SCOPE, key);
   if (r.ok && r.recovered) {
     const kept = moveAside(r.file, 'corrupt');
+    // Its name is empty now: the recovered history is written back under it soon.
+    heavyDirty.add(key);
+    dirty = true;
+    if (!timer) arm();
     reportDataProblem({
       file: r.file,
       problem: `The project chat ${key} could not be read (${r.recovered.error})`,
@@ -221,6 +227,7 @@ export function _loadedHoldersForTests() {
 export function _resetProjectChatsForTests() {
   if (timer) clearTimeout(timer);
   timer = null;
+  settled.clear();
   dirty = false;
   coreSer = new SerCache(coreText);
   itemSer = new SerCache();
@@ -326,6 +333,18 @@ function sameAsFile(f, chunks) {
   }
 }
 
+/**
+ * Files this process has compared with or written: the first write of each is
+ * skipped when the file already holds exactly that text (a start-up re-saves every
+ * holder, and an identical rewrite would rotate a copy of itself into `.bak`).
+ */
+const settled = new Set();
+const unchangedOnDisk = (f, chunks) => {
+  if (settled.has(f)) return false;
+  settled.add(f);
+  return sameAsFile(f, chunks);
+};
+
 const seqs = new Map();      // file → sequence of the newest write started
 const landed = new Map();    // file → sequence of the newest write that landed
 const nextSeq = (f) => { const n = (seqs.get(f) ?? 0) + 1; seqs.set(f, n); return n; };
@@ -335,6 +354,7 @@ function writeHeavySync(key, holder, { verify = false } = {}) {
   const f = heavyFile(key);
   const chunks = heavyOf(holder);
   ensureHeavyDir(f);
+  if (unchangedOnDisk(f, chunks)) return;
   asideUnadopted(f, `Project chat ${key}`);
   const seq = nextSeq(f);
   writeAtomicSync(f, chunks, { generations: GENERATIONS });
@@ -345,8 +365,10 @@ function writeHeavySync(key, holder, { verify = false } = {}) {
 
 function writeCoreSync(opts) {
   const f = file();
+  const chunks = coreChunks(opts);
+  if (unchangedOnDisk(f, chunks)) return;
   const seq = nextSeq(f);
-  writeAtomicSync(f, coreChunks(opts), { generations: GENERATIONS });
+  writeAtomicSync(f, chunks, { generations: GENERATIONS });
   landed.set(f, seq);
 }
 

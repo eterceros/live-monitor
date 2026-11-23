@@ -26,7 +26,8 @@ const mustBeObject = (v) => {
 function readStored() {
   const r = readJsonDurable(FILE, { generations: GENERATIONS, validate: mustBeObject });
   reportRead(FILE, r, 'The board settings');
-  return r.status === 'ok' ? r.value : {};
+  // Read from a backup: the damaged file is aside, so the name is written again now.
+  return { stored: r.status === 'ok' ? r.value : {}, rewrite: r.status === 'ok' && r.source !== FILE };
 }
 
 const UPGRADE_DEFAULTS = { skipped: null, snoozedUntil: null, seen: null, acknowledgedJob: null };
@@ -236,7 +237,7 @@ class Settings extends EventEmitter {
   constructor() {
     super();
     mkdirSync(DATA_DIR, { recursive: true });
-    const stored = readStored();
+    const { stored, rewrite } = readStored();
     this.values = {
       maxActiveTasks: config.limits.defaultMaxActiveTasks,
       autoStart: true,
@@ -272,6 +273,7 @@ class Settings extends EventEmitter {
     this.values.projects = normalizeProjects(this.values.projects);
     this.values.tuning = normalizeTuning(this.values.tuning);
     this.values.requiredPlugins = normalizeRequiredPlugins(this.values.requiredPlugins);
+    if (rewrite) writeDurableSync(FILE, JSON.stringify(this.values, null, 2), { generations: GENERATIONS });
   }
 
   /** The user-level plugins every machine should have (board-wide, never per project). */

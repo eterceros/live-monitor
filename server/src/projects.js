@@ -377,6 +377,8 @@ function load() {
     return [seed()];
   }
   cache = normalizeList(read.value);
+  // Read from a backup: the damaged file is aside, so the name is written again now.
+  if (read.source !== FILE) writeDurableSync(FILE, `${JSON.stringify(cache, null, 2)}\n`, { generations: GENERATIONS });
   announce(cache);
   return cache;
 }
@@ -769,7 +771,9 @@ function readRemoved() {
   // the newest good backup is read, or the damaged file is moved aside first.
   const read = reportRead(REMOVED_FILE, readJsonDurable(REMOVED_FILE, { generations: GENERATIONS }), 'The list of removed projects');
   if (read.status !== 'ok') return [];
-  return Array.isArray(read.value) ? read.value.filter((r) => r && typeof r === 'object') : [];
+  const list = Array.isArray(read.value) ? read.value.filter((r) => r && typeof r === 'object') : [];
+  if (read.source !== REMOVED_FILE) writeRemoved(list);
+  return list;
 }
 
 function writeRemoved(list) {

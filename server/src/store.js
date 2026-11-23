@@ -573,10 +573,14 @@ class Store extends EventEmitter {
     }
   }
 
-  #writeCoreSync(projectId, opts) {
+  #writeCoreSync(projectId, { skipIfSame = false, ...opts } = {}) {
     const file = tasksFile(projectId);
+    const chunks = this.#coreChunks(projectId, opts);
+    // The boot's write of a file that did not change: skipped, so a restart does
+    // not rotate an identical copy into `.bak` (and wears nothing).
+    if (skipIfSame && sameAsFile(file, chunks)) return;
     const seq = this.#nextSeq(file);
-    writeAtomicSync(file, this.#coreChunks(projectId, opts), { generations: GENERATIONS });
+    writeAtomicSync(file, chunks, { generations: GENERATIONS });
     this.#seqLanded.set(file, seq);
   }
 
@@ -610,7 +614,7 @@ class Store extends EventEmitter {
       const task = this.tasks[key];
       if (task) this.#writeHeavySync(task, { skipIfSame: this.#bootFlush });
     }
-    return this.#writeCoreSync(projectId);
+    return this.#writeCoreSync(projectId, { skipIfSame: this.#bootFlush });
   }
 
   #revalidateAll() {

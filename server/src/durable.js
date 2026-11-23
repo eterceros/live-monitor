@@ -218,6 +218,11 @@ export function readJsonDurable(file, { generations = 3, validate, aside = true 
   const candidates = [file];
   for (let i = 0; i < Math.max(generations, 1); i++) candidates.push(generationPath(file, i));
   const problems = [];
+  // No file at all is a file someone removed (a cut never removes one: a rename
+  // leaves the old name or the new one). Its backups are not read in its place, or
+  // deleting a file to start afresh would bring it back. A file this function moved
+  // aside is written again by its caller, from what it recovered, right away.
+  if (!fs.existsSync(file)) return { status: 'missing', problems };
   let found = false;
   let mainBad = false;
   for (const candidate of candidates) {
@@ -239,7 +244,6 @@ export function readJsonDurable(file, { generations = 3, validate, aside = true 
       continue;
     }
     if (candidate === file) markGood(file);
-    else if (!mainBad && !fs.existsSync(file)) problems.push({ file, problem: 'the file is missing' });
     const keptAt = mainBad && aside ? quarantine(file) : null;
     return { status: 'ok', value: r.value, source: candidate, problems, keptAt };
   }
