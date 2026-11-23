@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, mkdirSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
 import { store } from './store.js';
@@ -10,7 +10,10 @@ import { PROJECT_WORKTREE_DIR, isHolderKey, parseHolderKey } from './keys.js';
 import { SerCache, objectChunks, writeAtomicSync, writeChunksAtomic } from './persistcache.js';
 import {
   SPLIT_MARK, coreText, heavyChunks, heavyItems, heavyPath, mergeHeavy, readHeavy, quarantine, ensureHeavyDir, backupOnce, retireLegacyName,
+  asideUnadopted, newerDataFiles,
 } from './splitfmt.js';
+import { readJsonDurable, quarantine as moveAside } from './durable.js';
+import { reportDataProblem, reportRead } from './datahealth.js';
 
 // Pure helpers live in `keys.js` (the runner imports them and must not pull in
 // this module's store); re-exported so every importer here keeps working.
@@ -42,6 +45,8 @@ const PERSIST_DELAY_MS = process.env.HFSMON_PERSIST_DELAY_MS !== undefined
   ? Number(process.env.HFSMON_PERSIST_DELAY_MS)
   : 3000;
 const SWEEP_INTERVAL_MS = Number(process.env.HFSMON_SWEEP_INTERVAL_MS ?? 60_000);
+/** Previous versions kept of the main file and of each data file (hard links: `durable.js`). */
+const GENERATIONS = 1;
 
 const file = () => path.join(DATA_DIR, FILE_NAME);
 
@@ -107,16 +112,15 @@ export function loadProjectChats() {
   if (loaded) return;
   loaded = true;
   const f = file();
-  if (!existsSync(f)) return;
-  let raw;
-  try {
-    raw = JSON.parse(readFileSync(f, 'utf8'));
-  } catch (e) {
-    // Keep the broken file aside rather than overwrite it with an empty one.
-    console.error(`[projectchats] ${f} no se pudo leer (${e.message}); se conserva como .bad`);
-    try { renameSync(f, `${f}.bad`); } catch { /* best effort */ }
-    return;
-  }
+  // A damaged file (a power cut leaves it full of zeros) is read from its previous
+  // version; with none it is moved aside under a name of its own (never over an
+  // earlier one) and the board starts without project chats. Their data files stay:
+  // a holder created afresh moves the one it would overwrite aside (`asideUnadopted`).
+  const read = reportRead(f, readJsonDurable(f, { generations: GENERATIONS }), 'The project chats');
+  if (read.status !== 'ok') return;
+  const raw = read.value;
+  // Read from its previous version: the damaged file is aside, the name is written again soon.
+  if (read.source !== f) { dirty = true; if (!timer) arm(); }
   for (const [key, holder] of Object.entries(raw?.holders ?? {})) {
     if (!holder || typeof holder !== 'object' || holder.kind !== 'project') continue;
     const parsed = parseHolderKey(key);
@@ -131,6 +135,19 @@ export function loadProjectChats() {
     resetChatsOnBoot(holder);
     holders.set(key, holder);
   }
+  if (legacy) {
+    // An old copy restored over a split file: converting it would overwrite the
+    // newer data files with its older history. Kept in the old format instead.
+    const newer = newerDataFiles(DATA_DIR, SCOPE, read.source ?? f, [...holders.keys()]);
+    if (newer.length) {
+      noSplit = true;
+      reportDataProblem({
+        file: f,
+        problem: `The project chats are in the old one-file format, but the data files of ${newer.join(', ')} are newer than it: it looks like an older copy restored over newer data`,
+        action: 'Not converted, so the newer data files are not overwritten; the file keeps being saved in the old format. Compare them and restore the right copy.',
+      });
+    }
+  }
 }
 
 /**
@@ -141,9 +158,28 @@ export function loadProjectChats() {
  */
 function loadHeavy(f, key, holder) {
   const r = readHeavy(DATA_DIR, SCOPE, key);
+  if (r.ok && r.recovered) {
+    const kept = moveAside(r.file, 'corrupt');
+    // Its name is empty now: the recovered history is written back under it soon.
+    heavyDirty.add(key);
+    dirty = true;
+    if (!timer) arm();
+    reportDataProblem({
+      file: r.file,
+      problem: `The project chat ${key} could not be read (${r.recovered.error})`,
+      action: `Loaded from its previous version ${path.basename(r.recovered.from)}; the last few seconds before it may be missing.${kept ? ` The damaged file was kept as ${path.basename(kept)}.` : ''}`,
+    });
+  }
   if (!r.ok) {
     const aside = r.reason === 'corrupt' ? quarantine(r.file) : null;
-    console.error(`[projectchats] ${f}: el chat ${key} está dividido pero ${r.file} está ${r.foreign ? 'a nombre de otro id (no se lee)' : r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); ${aside ? `movido a ${aside}` : 'NO se pudo apartar'}`}; arranca sin historial (la copia .pre-split.bak lo conserva)`);
+    console.error(`[projectchats] ${f}: el chat ${key} está dividido pero ${r.file} está ${r.foreign ? 'a nombre de otro id (no se lee)' : r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); ${aside ? `movido a ${aside}` : 'NO se pudo apartar'}`}; arranca sin historial (la copia .pre-split.bak, si existe, tiene el de la fecha de la conversión)`);
+    if (!r.foreign) {
+      reportDataProblem({
+        file: r.file,
+        problem: `The project chat ${key} is ${r.reason === 'missing' ? 'missing' : `unreadable (${r.error})`} and has no usable previous version`,
+        action: `It starts without its messages.${aside ? ` The damaged file was kept as ${path.basename(aside)}.` : r.reason === 'corrupt' ? ' The damaged file could NOT be moved aside.' : ''} A .pre-split.bak, if there is one, holds the history as of the conversion only.`,
+      });
+    }
     delete holder[SPLIT_MARK];
     return;
   }
@@ -191,6 +227,7 @@ export function _loadedHoldersForTests() {
 export function _resetProjectChatsForTests() {
   if (timer) clearTimeout(timer);
   timer = null;
+  settled.clear();
   dirty = false;
   coreSer = new SerCache(coreText);
   itemSer = new SerCache();
@@ -296,6 +333,18 @@ function sameAsFile(f, chunks) {
   }
 }
 
+/**
+ * Files this process has compared with or written: the first write of each is
+ * skipped when the file already holds exactly that text (a start-up re-saves every
+ * holder, and an identical rewrite would rotate a copy of itself into `.bak`).
+ */
+const settled = new Set();
+const unchangedOnDisk = (f, chunks) => {
+  if (settled.has(f)) return false;
+  settled.add(f);
+  return sameAsFile(f, chunks);
+};
+
 const seqs = new Map();      // file → sequence of the newest write started
 const landed = new Map();    // file → sequence of the newest write that landed
 const nextSeq = (f) => { const n = (seqs.get(f) ?? 0) + 1; seqs.set(f, n); return n; };
@@ -305,8 +354,10 @@ function writeHeavySync(key, holder, { verify = false } = {}) {
   const f = heavyFile(key);
   const chunks = heavyOf(holder);
   ensureHeavyDir(f);
+  if (unchangedOnDisk(f, chunks)) return;
+  asideUnadopted(f, `Project chat ${key}`);
   const seq = nextSeq(f);
-  writeAtomicSync(f, chunks);
+  writeAtomicSync(f, chunks, { generations: GENERATIONS });
   landed.set(f, seq);
   if (verify && readFileSync(f, 'utf8') !== chunks.join('')) throw new Error(`${f}: what was written does not match what was read back`);
   retireLegacyName(DATA_DIR, SCOPE, key, [...holders.keys()]);
@@ -314,8 +365,10 @@ function writeHeavySync(key, holder, { verify = false } = {}) {
 
 function writeCoreSync(opts) {
   const f = file();
+  const chunks = coreChunks(opts);
+  if (unchangedOnDisk(f, chunks)) return;
   const seq = nextSeq(f);
-  writeAtomicSync(f, coreChunks(opts));
+  writeAtomicSync(f, chunks, { generations: GENERATIONS });
   landed.set(f, seq);
 }
 
@@ -429,8 +482,9 @@ async function flushProjectChatsAsync() {
       const f = heavyFile(key);
       const parts = heavyOf(holder);       // a snapshot: immutable strings from here on
       ensureHeavyDir(f);
+      asideUnadopted(f, `Project chat ${key}`);
       const seq = nextSeq(f);
-      if (await writeChunksAtomic(f, parts, () => current(f, seq))) {
+      if (await writeChunksAtomic(f, parts, () => current(f, seq), { generations: GENERATIONS })) {
         landed.set(f, seq);
         retireLegacyName(DATA_DIR, SCOPE, key, [...holders.keys()]);
       }
@@ -438,7 +492,7 @@ async function flushProjectChatsAsync() {
     const f = file();
     const parts = coreChunks();
     const seq = nextSeq(f);
-    if (await writeChunksAtomic(f, parts, () => current(f, seq))) landed.set(f, seq);
+    if (await writeChunksAtomic(f, parts, () => current(f, seq), { generations: GENERATIONS })) landed.set(f, seq);
   } catch (e) {
     dirty = true;
     keys.forEach((k) => heavyDirty.add(k));

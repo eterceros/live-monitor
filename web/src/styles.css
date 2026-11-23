@@ -184,6 +184,19 @@ body.resizing-row { cursor: row-resize; user-select: none; }
 }
 
 .board-search-hint { color: var(--muted); font-size: var(--fs-sm); padding: 4px 18px 0; }
+
+/* data files found damaged at start-up (server/src/datahealth.js) */
+.data-health {
+  margin: 8px 18px 0; padding: 8px 12px; border-radius: 6px;
+  background: var(--danger-bg); border: 1px solid var(--danger-border); color: var(--text);
+  font-size: var(--fs-sm);
+}
+.data-health-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--danger-fg); }
+.data-health p { margin: 4px 0; }
+.data-health ul { margin: 4px 0 0; padding-left: 18px; }
+.data-health li { margin: 2px 0; overflow-wrap: anywhere; }
+.data-health li.warning { color: var(--warn-fg); }
+.data-health code { font-family: var(--font-mono); }
 mark.hit { background: rgba(79, 142, 247, 0.3); color: inherit; border-radius: 2px; }
 
 /* the drafted answers, read before they reach the reviewer */

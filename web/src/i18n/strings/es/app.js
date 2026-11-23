@@ -161,4 +161,10 @@ export default {
     expandPanel: 'Expandir el panel',
     collapsePanel: 'Colapsar el panel',
   },
+  dataHealth: {
+    title: 'Problema con los archivos de datos del tablero',
+    intro: 'Al arrancar se encontraron estos archivos dañados. No se sobrescribió nada: cada archivo dañado se conservó aparte. Revísalos antes de seguir.',
+    done: 'Qué se hizo:',
+    hide: 'Ocultar',
+  },
 };
