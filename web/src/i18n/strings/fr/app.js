@@ -161,4 +161,10 @@ export default {
     expandPanel: 'Agrandir le panneau',
     collapsePanel: 'Réduire le panneau',
   },
+  dataHealth: {
+    title: 'Problème avec les fichiers de données du tableau',
+    intro: 'Ces fichiers ont été trouvés endommagés au démarrage. Rien n’a été écrasé : chaque fichier endommagé a été mis de côté. Vérifiez-les avant de continuer.',
+    done: 'Ce qui a été fait :',
+    hide: 'Masquer',
+  },
 };

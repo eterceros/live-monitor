@@ -59,6 +59,7 @@ import { claudeHooks } from './claude.js';
 import { userPluginsRouter, userPluginHooks, pluginEvents, startPluginChecks, noteInit } from './userplugins.js';
 import { warmBoardPlugins } from './boardplugin.js';
 import { quotaState, quotaEvents, resumeQuotaOnBoot } from './quota.js';
+import { dataHealth, dataHealthEvents } from './datahealth.js';
 import { usageState, usageEvents, usageRouter, usageHooks, startUsageProbe } from './usage.js';
 import { installCrashGuard } from './crashguard.js';
 import { runnerEvents } from './runner-client.js';
@@ -477,6 +478,9 @@ const snapshot = (known = machines(), projects = listProjects(), ids = new Set(p
   projectChats: allHolders().map(holderSummary),
   active: activeCount(),
   settings: settings.snapshot(),
+  // Data files found damaged at start-up and what was done about each: the
+  // banner on the board. Empty on a healthy board.
+  dataHealth: dataHealth(),
   github: config.github,
   models: config.claude.available ?? [],
   poll: pollStatus(),
@@ -1825,6 +1829,7 @@ upgradeEvents.on('state', (state) => broadcast({ type: 'upgrade', state }));
 // snapshot carries. The same object under both names, so the board can read it
 // by whichever it already knows.
 quotaEvents.on('state', (state) => broadcast({ type: 'quota', state, quota: state }));
+dataHealthEvents.on('change', (items) => broadcast({ type: 'data-health', items }));
 usageEvents.on('state', (usage) => broadcast({ type: 'usage', usage }));
 // States and timestamps only: the URL and the code of a renewal never leave
 // the response to the client that asked for them.

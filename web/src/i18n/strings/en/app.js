@@ -161,4 +161,10 @@ export default {
     expandPanel: 'Expand the panel',
     collapsePanel: 'Collapse the panel',
   },
+  dataHealth: {
+    title: 'Problem with the data files of the board',
+    intro: 'These files were found damaged at start-up. Nothing was overwritten: each damaged file was kept aside. Check them before you carry on.',
+    done: 'What was done:',
+    hide: 'Hide',
+  },
 };
