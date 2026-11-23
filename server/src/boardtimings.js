@@ -5,7 +5,8 @@
 // process. It writes the start before that, and the next boot closes it with
 // `closeOpenBoardSpans`. Like metrics.js, nothing here ever throws.
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { writeDurableSync } from './durable.js';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
 
@@ -28,9 +29,7 @@ function load() {
 function save(list) {
   try {
     const file = boardTimingsFile();
-    const tmp = `${file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(list.slice(-MAX_BOARD_SPANS), null, 2), 'utf8');
-    renameSync(tmp, file);
+    writeDurableSync(file, JSON.stringify(list.slice(-MAX_BOARD_SPANS), null, 2), { tmp: `${file}.tmp` });
   } catch { /* a lost measurement is not worth a failed restart */ }
 }
 

@@ -27,16 +27,23 @@
  * @module projects
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { config, mergeInto, DATA_DIR } from './config.js';
 import { PROFILE_IDS, isProfileId } from './profiles.js';
 import { DEFAULT_PROJECT_ID, PROJECT_ID_RE, isProjectId } from './keys.js';
 import { setProjectResolver } from './prompts.js';
+import { readJsonDurable, writeDurableSync } from './durable.js';
+import { reportRead } from './datahealth.js';
 
 /** @typedef {import('./keys.js').Project} Project */
 
 const FILE = path.join(DATA_DIR, 'projects.json');
+/** Previous versions kept next to the registry files (`.bak`, `.bak.1`, `.bak.2`). */
+const GENERATIONS = 3;
+const mustBeList = (v) => {
+  if (!Array.isArray(v)) throw new Error('not a list');
+};
 
 /**
  * Config paths a project may never override, as exact paths or as patterns
@@ -347,11 +354,12 @@ function announce(list) {
  */
 function load() {
   if (cache) return cache;
-  let raw;
-  try {
-    raw = readFileSync(FILE, 'utf8');
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
+  // A file a power cut left unreadable is read from its newest good backup, or
+  // moved aside (kept, reported) and the board starts as if there were none. A
+  // file that parses but does not validate still throws below, as it always has:
+  // that is a hand edit to fix, not damage to work around.
+  const read = reportRead(FILE, readJsonDurable(FILE, { generations: GENERATIONS, validate: mustBeList }), 'The project registry');
+  if (read.status !== 'ok') {
     // Seeded, not cached. The seed is derived from `config`, which reloads
     // from disk while the board runs -- the README promises that editing the
     // assignee or the reviewer in config.json takes effect without a restart,
@@ -368,7 +376,7 @@ function load() {
     announceOnce(SEED_ANNOUNCED, null);
     return [seed()];
   }
-  cache = normalizeList(JSON.parse(raw));
+  cache = normalizeList(read.value);
   announce(cache);
   return cache;
 }
@@ -483,7 +491,7 @@ export function configSectionFor(id, section) {
 export function saveProjects(list) {
   const next = normalizeList(list);
   mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(FILE, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  writeDurableSync(FILE, `${JSON.stringify(next, null, 2)}\n`, { generations: GENERATIONS });
   cache = next;
   announce(cache);
   return [...cache];
@@ -757,19 +765,16 @@ const repoKey = (p) => String(p ?? '').replace(/[\\]/g, '/').replace(/\/+$/, '')
 
 /** Read lazily on every use (never at import): the file is rarely touched. */
 function readRemoved() {
-  try {
-    const raw = JSON.parse(readFileSync(REMOVED_FILE, 'utf8'));
-    return Array.isArray(raw) ? raw.filter((r) => r && typeof r === 'object') : [];
-  } catch (err) {
-    if (err.code === 'ENOENT' || err instanceof SyntaxError) return [];
-    throw err;
-  }
+  // Unreadable used to mean «nothing removed» and the next write replaced it: now
+  // the newest good backup is read, or the damaged file is moved aside first.
+  const read = reportRead(REMOVED_FILE, readJsonDurable(REMOVED_FILE, { generations: GENERATIONS }), 'The list of removed projects');
+  if (read.status !== 'ok') return [];
+  return Array.isArray(read.value) ? read.value.filter((r) => r && typeof r === 'object') : [];
 }
 
 function writeRemoved(list) {
   mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(REMOVED_FILE, `${JSON.stringify(list, null, 2)}
-`, 'utf8');
+  writeDurableSync(REMOVED_FILE, `${JSON.stringify(list, null, 2)}\n`, { generations: GENERATIONS });
 }
 
 /**

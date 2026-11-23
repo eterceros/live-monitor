@@ -4,8 +4,9 @@ import express from 'express';
 import { isDirectLoopback } from './access.js';
 import { createRequire } from 'node:module';
 import {
-  existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, rmSync, appendFileSync,
+  existsSync, readFileSync, mkdirSync, rmSync, appendFileSync,
 } from 'node:fs';
+import { writeDurableSync } from './durable.js';
 import path from 'node:path';
 import { ROOT, DATA_DIR } from './config.js';
 import { store } from './store.js';
@@ -178,9 +179,7 @@ function writeJobFile(value) {
     rmSync(file, { force: true });
     return;
   }
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
-  renameSync(tmp, file);
+  writeDurableSync(file, JSON.stringify(value, null, 2), { tmp: `${file}.${process.pid}.tmp` });
 }
 
 function readLogTail(id, n = MAX_LOG_TAIL) {
