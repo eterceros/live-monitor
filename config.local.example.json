@@ -8,6 +8,14 @@
     "token": "generate with: node -e \"console.log(require('crypto').randomBytes(24).toString('hex'))\"",
     "trustedTailscaleUsers": ["you@example.com"]
   },
+  "backup": {
+    "_comment": "Snapshots of server/data (hard links, checked, kept 24 hourly / 14 daily / 8 weekly). Everything here is optional. snapshotDir defaults to %LOCALAPPDATA%/hfs-monitor/snapshots; everyMinutes 0 = only at start-up; enabled false = none. offsiteDir (off by default) gets one archive a day of the newest good snapshot, the last offsiteKeep (7) kept: a OneDrive folder or another disk. Restore with: node tools/restore-snapshot/restore.mjs list",
+    "snapshotDir": "C:/Users/you/AppData/Local/hfs-monitor/snapshots",
+    "everyMinutes": 60,
+    "keep": { "hourly": 24, "daily": 14, "weekly": 8 },
+    "offsiteDir": "",
+    "offsiteKeep": 7
+  },
   "machines": {
     "my-runner": {
       "kind": "runner",

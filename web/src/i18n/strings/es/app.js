@@ -163,7 +163,7 @@ export default {
   },
   dataHealth: {
     title: 'Problema con los archivos de datos del tablero',
-    intro: 'Al arrancar se encontraron estos archivos dañados. No se sobrescribió nada: cada archivo dañado se conservó aparte. Revísalos antes de seguir.',
+    intro: 'El tablero encontró problemas en sus archivos de datos o en sus instantáneas. No se sobrescribió nada: los archivos dañados se conservaron aparte. Revísalos antes de seguir.',
     done: 'Qué se hizo:',
     hide: 'Ocultar',
   },
