@@ -4,6 +4,7 @@
 // A restart cannot record its own end: the script that stops the board kills this
 // process. It writes the start before that, and the next boot closes it with
 // `closeOpenBoardSpans`. Like metrics.js, nothing here ever throws.
+import './bootsnapshot.js';   // first: the start-up snapshot comes before any write
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { writeDurableSync } from './durable.js';

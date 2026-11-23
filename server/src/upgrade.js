@@ -1,3 +1,4 @@
+import './bootsnapshot.js';   // first: the start-up snapshot comes before any write
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import express from 'express';

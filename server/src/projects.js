@@ -27,6 +27,7 @@
  * @module projects
  */
 
+import './bootsnapshot.js';   // first: the start-up snapshot comes before any write
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { config, mergeInto, DATA_DIR } from './config.js';

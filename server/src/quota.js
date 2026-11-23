@@ -18,6 +18,7 @@
  * States: `held → draining → released`.
  */
 
+import './bootsnapshot.js';   // first: the start-up snapshot comes before any write
 import { EventEmitter } from 'node:events';
 import { readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { writeDurableSync } from './durable.js';

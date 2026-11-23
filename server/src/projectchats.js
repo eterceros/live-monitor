@@ -1,3 +1,4 @@
+import './bootsnapshot.js';   // first: the start-up snapshot comes before any write
 import { readFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
