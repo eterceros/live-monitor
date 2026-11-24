@@ -163,7 +163,7 @@ export default {
   },
   dataHealth: {
     title: 'Problem mit den Datendateien des Boards',
-    intro: 'Diese Dateien waren beim Start beschädigt. Nichts wurde überschrieben: jede beschädigte Datei wurde beiseitegelegt. Prüfen Sie sie, bevor Sie weitermachen.',
+    intro: 'Das Board hat Probleme mit seinen Datendateien oder Sicherungen gefunden. Nichts wurde überschrieben: beschädigte Dateien wurden beiseitegelegt. Prüfen Sie sie, bevor Sie weitermachen.',
     done: 'Was getan wurde:',
     hide: 'Ausblenden',
   },

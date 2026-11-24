@@ -60,6 +60,7 @@ import { userPluginsRouter, userPluginHooks, pluginEvents, startPluginChecks, no
 import { warmBoardPlugins } from './boardplugin.js';
 import { quotaState, quotaEvents, resumeQuotaOnBoot } from './quota.js';
 import { dataHealth, dataHealthEvents } from './datahealth.js';
+import { startSnapshotTimer } from './snapshots.js';
 import { usageState, usageEvents, usageRouter, usageHooks, startUsageProbe } from './usage.js';
 import { installCrashGuard } from './crashguard.js';
 import { runnerEvents } from './runner-client.js';
@@ -1908,6 +1909,9 @@ server.listen(config.port, bootHost, () => {
   // From here on the board exists and holds state: the crash guard stops
   // treating a failure as "it never started" and starts keeping the process up.
   listening = true;
+  // A snapshot of the data folder every hour, after a flush that wrote everything
+  // (`snapshots.js`); the start-up one was taken before anything was written.
+  startSnapshotTimer(() => store.flush());
   console.log(`hfs-monitor escuchando en http://localhost:${config.port}`);
   console.log(`acceso: ${describeAccess()}`);
   console.log(`proyecto: ${config.project.repoPath} (${config.github.repo})`);

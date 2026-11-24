@@ -163,7 +163,7 @@ export default {
   },
   dataHealth: {
     title: 'Problème avec les fichiers de données du tableau',
-    intro: 'Ces fichiers ont été trouvés endommagés au démarrage. Rien n’a été écrasé : chaque fichier endommagé a été mis de côté. Vérifiez-les avant de continuer.',
+    intro: 'Le tableau a trouvé des problèmes dans ses fichiers de données ou ses instantanés. Rien n’a été écrasé : les fichiers endommagés ont été mis de côté. Vérifiez-les avant de continuer.',
     done: 'Ce qui a été fait :',
     hide: 'Masquer',
   },
