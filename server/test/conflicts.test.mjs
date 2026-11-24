@@ -217,7 +217,7 @@ function taskOf(fields = {}) {
 }
 
 /** The git and the session as scripted fakes; `calls` records what ran, in order. */
-function fakes({ verifyOk = true, testFails = false, pushFails = false, quota = false, clean = false } = {}) {
+function fakes({ verifyOk = true, testFails = false, pushFails = false, quota = false, clean = false, same = false } = {}) {
   const calls = [];
   conflictHooks.isProjectWorktree = async () => true;
   conflictHooks.resolveRef = async () => 'm1';
@@ -228,6 +228,7 @@ function fakes({ verifyOk = true, testFails = false, pushFails = false, quota = 
   conflictHooks.headCommit = async () => head;
   fixHooks.runClaude = async (o) => { calls.push(['session', o.prompt.includes('git merge origin/main'), o.resume]); head = 'h1'; return { ok: true, resultText: 'listo', sessionId: 'fix-session', toolCounts: {}, quota }; };
   conflictHooks.verify = async () => { calls.push(['verify']); return verifyOk ? { ok: true, problems: [] } : { ok: false, problems: ['conflict markers are still in: a.rs'] }; };
+  conflictHooks.sameTree = async () => same;
   conflictHooks.testPhase = async (t) => { calls.push(['test', t.e2ePassedAt]); if (testFails) throw new Error('The e2e tests still fail after 3 attempts'); };
   conflictHooks.push = async () => { calls.push(['push']); if (pushFails) throw new Error('rejected'); };
   conflictHooks.rollback = async (_m, _c, before) => { calls.push(['rollback', before]); head = before; return true; };
@@ -280,6 +281,47 @@ test('tests en rojo tras resolver: se deshace y no se sube nada', async () => {
   assert.deepEqual(calls.map((c) => c[0]), ['session', 'verify', 'test', 'rollback']);
   assert.equal(task.state, 'ready');
   assert.match(task.conflictRun.reason, /still fail/);
+});
+
+test('el merge deja la rama idéntica a main: ni tests ni push, se deshace y se dice (EHR #686)', async () => {
+  const task = taskOf({ state: 'pr_draft' });
+  const calls = fakes({ same: true });
+  await withAutostart(async () => { conflictTick(); await settled(task); });
+  assert.deepEqual(calls.map((c) => c[0]), ['session', 'verify', 'rollback'], 'sin suite que solo diría «nothing changed», y sin push');
+  assert.deepEqual(calls[2], ['rollback', 'h0']);
+  assert.equal(task.state, 'pr_draft');
+  assert.equal(task.conflictRun.status, 'already_in_base');
+  assert.match(task.conflictRun.reason, /already there/);
+  assert.ok(chatOf(task).some((m) => /already in origin\/main/.test(m)), 'la tarjeta lo cuenta');
+  assert.notEqual(task.state, 'fixing');
+});
+
+test('sameTree con git de verdad: tomar todo lo de main deja la rama idéntica; conservar lo suyo, no', async () => {
+  const r = repo();
+  try {
+    const mainSha = await resolveRef(M, r.work, 'origin/main');
+    assert.equal(await realHooks.sameTree(M, r.work, mainSha), false, 'antes del merge la rama tiene su propio cambio');
+    assert.throws(() => r.git(['merge', 'origin/main']));
+    r.git(['checkout', '--ours', 'shared.txt']);
+    r.git(['add', 'shared.txt']);
+    r.git(['commit', '--no-edit']);
+    assert.equal(await realHooks.sameTree(M, r.work, mainSha), false, 'resuelto a favor de la rama: sigue aportando');
+    r.git(['reset', '--hard', 'HEAD~1']);
+    assert.throws(() => r.git(['merge', 'origin/main']));
+    r.git(['checkout', '--theirs', 'shared.txt']);
+    r.git(['add', 'shared.txt']);
+    r.git(['commit', '--no-edit']);
+    assert.equal(await realHooks.sameTree(M, r.work, mainSha), true, 'resuelto a favor de main: la rama no aporta nada');
+  } finally { r.cleanup(); }
+});
+
+test('decide: lo que ya está en este origin/main no se vuelve a intentar, pero otro origin/main sí', () => {
+  const landed = idle({ conflictRun: { status: 'already_in_base', mainSha: 'm1', attempts: 1, reason: 'after merging origin/main the branch adds nothing: its work is already there', said: true } });
+  const again = decide(landed, facts());
+  assert.equal(again.act, 'skip');
+  assert.equal(again.say, false, 'ya se dijo');
+  assert.match(again.reason, /already there/);
+  assert.equal(decide(idle({ conflictRun: { ...landed.conflictRun, mainSha: 'm0' } }), facts()).act, 'resolve', 'otro origin/main: se mira de nuevo');
 });
 
 test('la suite de la resolución deja la tarjeta en «fixing» y falla: vuelve a su estado, sin fase ni fantasma (EHR #686)', async () => {
