@@ -2,6 +2,8 @@ import { readFileSync, existsSync, mkdirSync, copyFileSync, statSync, constants,
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { ChunkBuilder } from './persistcache.js';
+import { generationPath, isKnownGood, markGood, quarantine as moveAside } from './durable.js';
+import { reportDataProblem } from './datahealth.js';
 
 /**
  * The split on-disk format of `tasks*.json` and `projectchats.json`.
@@ -18,8 +20,9 @@ import { ChunkBuilder } from './persistcache.js';
  *
  * In memory nothing changes: `task.log` and `chat.messages` are the arrays
  * they always were. The old format (no marker) is still read, as is. This module
- * is pure (only `node:*` and the chunk builder), so the tools under `tools/`
- * can import `readTasksFileMerged` and keep reading complete tasks.
+ * only reaches `node:*`, the chunk builder, `durable.js` and `datahealth.js` (all
+ * free of board state), so the tools under `tools/` can import
+ * `readTasksFileMerged` and keep reading complete tasks.
  */
 
 export const SPLIT_MARK = 'persistSplit';
@@ -173,22 +176,77 @@ export function readHeavy(dataDir, scope, id) {
     if (old !== file && existsSync(old)) file = old;
     else return { ok: false, reason: 'missing', file };
   }
+  let heavy;
   try {
-    const heavy = JSON.parse(readFileSync(file, 'utf8'));
-    if (!isObj(heavy) || Array.isArray(heavy)) throw new Error('not an object');
-    // A file that parses is not necessarily one of ours. Writing a fresh data file over it
-    // would destroy whatever it is, so a wrong shape is «corrupt»: it is moved aside, not read.
-    const hasLog = Object.hasOwn(heavy, 'log');
-    const hasMessages = Object.hasOwn(heavy, 'messages');
-    if (hasLog && !Array.isArray(heavy.log)) throw new Error(`"log" is ${typeof heavy.log}, not a list`);
-    if (hasMessages && (!isObj(heavy.messages) || Array.isArray(heavy.messages))) throw new Error('"messages" is not a map of chats');
-    if (!hasLog && !hasMessages) throw new Error('neither "log" nor "messages" is there');
-    // The file under the OLD name may be another id's on a case-folding file system.
-    if (heavy.key !== undefined && String(heavy.key) !== String(id)) return { ok: false, reason: 'missing', file, foreign: true };
-    return { ok: true, heavy, file, legacyName: file !== heavyPath(dataDir, scope, id) };
+    heavy = parseHeavy(file);
   } catch (e) {
+    // Its previous version (a hard link `durable.js` keeps at every write) may be whole.
+    const bak = generationPath(file, 0);
+    let older = null;
+    try { if (existsSync(bak)) older = parseHeavy(bak); } catch { /* no better */ }
+    if (older && (older.key === undefined || String(older.key) === String(id))) {
+      return { ok: true, heavy: older, file, legacyName: file !== heavyPath(dataDir, scope, id), recovered: { from: bak, error: e.message } };
+    }
     return { ok: false, reason: 'corrupt', file, error: e.message };
   }
+  // The file under the OLD name may be another id's on a case-folding file system.
+  if (heavy.key !== undefined && String(heavy.key) !== String(id)) return { ok: false, reason: 'missing', file, foreign: true };
+  markGood(file);
+  return { ok: true, heavy, file, legacyName: file !== heavyPath(dataDir, scope, id) };
+}
+
+/** A data file's content, or a throw saying why it is not one. */
+function parseHeavy(file) {
+  const buf = readFileSync(file);
+  if (buf.length && buf.every((b) => b === 0)) throw new Error(`${buf.length} zero bytes (its data never reached the disk, typically a power cut)`);
+  const heavy = JSON.parse(buf.toString('utf8'));
+  if (!isObj(heavy) || Array.isArray(heavy)) throw new Error('not an object');
+  // A file that parses is not necessarily one of ours. Writing a fresh data file over it
+  // would destroy whatever it is, so a wrong shape is «corrupt»: it is moved aside, not read.
+  const hasLog = Object.hasOwn(heavy, 'log');
+  const hasMessages = Object.hasOwn(heavy, 'messages');
+  if (hasLog && !Array.isArray(heavy.log)) throw new Error(`"log" is ${typeof heavy.log}, not a list`);
+  if (hasMessages && (!isObj(heavy.messages) || Array.isArray(heavy.messages))) throw new Error('"messages" is not a map of chats');
+  if (!hasLog && !hasMessages) throw new Error('neither "log" nor "messages" is there');
+  return heavy;
+}
+
+/**
+ * Before a data file is written: if one is already there that this process never
+ * read (nor wrote), it belongs to something the board does not have in memory —
+ * a holder whose main file was lost, a task restored from an old copy — and the
+ * write would destroy it. It is moved aside (`<name>.unadopted-<stamp>`) and the
+ * board says so. Returns the new path, or null when there was nothing to move.
+ * Throws when it could not be moved: the write must not happen then.
+ */
+export function asideUnadopted(file, label) {
+  if (isKnownGood(file) || !existsSync(file)) return null;
+  const kept = moveAside(file, 'unadopted');
+  if (!kept) throw new Error(`${file} exists, was never read by this board and could not be moved aside; not overwriting it`);
+  reportDataProblem({
+    file,
+    severity: 'warning',
+    problem: `${label}: a data file was already on disk that the board had not loaded (its main file did not list it, or listed an older copy)`,
+    action: `It was kept as ${path.basename(kept)} instead of being overwritten.`,
+  });
+  return kept;
+}
+
+/**
+ * The entries of a main file still in the old format whose data files on disk are
+ * NEWER than that main file: the sign of an old copy restored over a split one.
+ * Converting it would overwrite the newer history with the older one.
+ */
+export function newerDataFiles(dataDir, scope, mainFile, ids) {
+  let mainTime;
+  try { mainTime = statSync(mainFile).mtimeMs; } catch { return []; }
+  const out = [];
+  for (const id of ids) {
+    for (const f of new Set([heavyPath(dataDir, scope, id), heavyPathLegacy(dataDir, scope, id)])) {
+      try { if (statSync(f).mtimeMs > mainTime) { out.push(String(id)); break; } } catch { /* none */ }
+    }
+  }
+  return out;
 }
 
 /**

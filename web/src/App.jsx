@@ -176,6 +176,10 @@ export default function App() {
   // The account's usage window: null on a server that does not send it yet,
   // and then the board is exactly what it was before this existed.
   const [quota, setQuota] = useState(null);
+  // Data files the server found damaged at start-up (`server/src/datahealth.js`),
+  // and the ids this browser has hidden for now (they come back after a reload).
+  const [dataHealth, setDataHealth] = useState([]);
+  const [hiddenHealth, setHiddenHealth] = useState(() => new Set());
   // The account's usage probe: null on a server that has not sampled it yet,
   // or before the first snapshot/WS message brings one.
   const [usage, setUsage] = useState(null);
@@ -223,10 +227,12 @@ export default function App() {
         // is now, and a released window is the absence of one.
         if (msg.quota !== undefined) setQuota(msg.quota ?? null);
         if (msg.usage !== undefined) setUsage(msg.usage ?? null);
+        if (msg.dataHealth !== undefined) setDataHealth(msg.dataHealth ?? []);
         acceptSnapshot.current = false;
       },
       upgrade: (msg) => writeUpgrade(msg.state ?? null),
       quota: (msg) => setQuota(readQuota(msg)),
+      'data-health': (msg) => setDataHealth(msg.items ?? []),
       usage: (msg) => setUsage(msg.usage ?? null),
       login: (msg) => window.dispatchEvent(new CustomEvent('board-login', { detail: msg })),
       plugins: (msg) => window.dispatchEvent(new CustomEvent('board-plugins', { detail: msg })),
@@ -1019,6 +1025,24 @@ export default function App() {
         allTasks={shown} projectTasks={visible} usage={usage} quota={quota} now={quotaNow} onRefreshUsage={refreshUsage}
       />
 
+      {dataHealth.some((d) => !hiddenHealth.has(d.id)) && (
+        <div className="data-health" role="alert">
+          <div className="data-health-head">
+            <strong>{t.app.dataHealth.title}</strong>
+            <button type="button" className="btn btn-sm" onClick={() => setHiddenHealth(new Set(dataHealth.map((d) => d.id)))}>
+              {t.app.dataHealth.hide}
+            </button>
+          </div>
+          <p>{t.app.dataHealth.intro}</p>
+          <ul>
+            {dataHealth.filter((d) => !hiddenHealth.has(d.id)).map((d) => (
+              <li key={d.id} className={d.severity === 'warning' ? 'warning' : 'error'}>
+                <code title={d.path}>{d.file}</code> — {d.problem}. <em>{t.app.dataHealth.done}</em> {d.action}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {crossHint && <div className="board-search-hint">{crossHint}</div>}
 
       {activeProject || !loaded ? (

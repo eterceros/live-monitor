@@ -1,13 +1,35 @@
+import './bootsnapshot.js';   // first: the start-up snapshot comes before any write
 import { EventEmitter } from 'node:events';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { config, DATA_DIR } from './config.js';
 import { machines } from './machine.js';
 import { openTab, closeTab, pruneTabs, normalizeTabs, sealTabs, isLegacyTab } from './chattabs.js';
 import { isProjectId } from './keys.js';
 import { normalizeEffort, THINKING_BUDGET } from './effort.js';
+import { readJsonDurable, writeDurableSync } from './durable.js';
+import { reportRead } from './datahealth.js';
 
 const FILE = path.join(DATA_DIR, 'settings.json');
+/** Previous versions kept next to it (`settings.json.bak`, `.bak.1`, `.bak.2`). */
+const GENERATIONS = 3;
+
+const mustBeObject = (v) => {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('not an object');
+};
+
+/**
+ * The stored values. A file that cannot be read (a power cut leaves it full of
+ * zeros) no longer stops the board: the newest backup that reads is used, the
+ * damaged file is moved aside, and the board says so. With no backup at all the
+ * defaults apply; the damaged file is still kept, so nothing is lost by that.
+ */
+function readStored() {
+  const r = readJsonDurable(FILE, { generations: GENERATIONS, validate: mustBeObject });
+  reportRead(FILE, r, 'The board settings');
+  // Read from a backup: the damaged file is aside, so the name is written again now.
+  return { stored: r.status === 'ok' ? r.value : {}, rewrite: r.status === 'ok' && r.source !== FILE };
+}
 
 const UPGRADE_DEFAULTS = { skipped: null, snoozedUntil: null, seen: null, acknowledgedJob: null };
 const SDK_VERSION = /^0\.3\.\d{1,6}$/;
@@ -216,7 +238,7 @@ class Settings extends EventEmitter {
   constructor() {
     super();
     mkdirSync(DATA_DIR, { recursive: true });
-    const stored = existsSync(FILE) ? JSON.parse(readFileSync(FILE, 'utf8')) : {};
+    const { stored, rewrite } = readStored();
     this.values = {
       maxActiveTasks: config.limits.defaultMaxActiveTasks,
       autoStart: true,
@@ -252,6 +274,7 @@ class Settings extends EventEmitter {
     this.values.projects = normalizeProjects(this.values.projects);
     this.values.tuning = normalizeTuning(this.values.tuning);
     this.values.requiredPlugins = normalizeRequiredPlugins(this.values.requiredPlugins);
+    if (rewrite) writeDurableSync(FILE, JSON.stringify(this.values, null, 2), { generations: GENERATIONS });
   }
 
   /** The user-level plugins every machine should have (board-wide, never per project). */
@@ -505,7 +528,7 @@ class Settings extends EventEmitter {
   }
 
   #persist() {
-    writeFileSync(FILE, JSON.stringify(this.values, null, 2), 'utf8');
+    writeDurableSync(FILE, JSON.stringify(this.values, null, 2), { generations: GENERATIONS });
     this.emit('change', this.snapshot());
     return this.snapshot();
   }

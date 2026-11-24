@@ -161,4 +161,10 @@ export default {
     expandPanel: 'Panel ausklappen',
     collapsePanel: 'Panel einklappen',
   },
+  dataHealth: {
+    title: 'Problem mit den Datendateien des Boards',
+    intro: 'Das Board hat Probleme mit seinen Datendateien oder Sicherungen gefunden. Nichts wurde überschrieben: beschädigte Dateien wurden beiseitegelegt. Prüfen Sie sie, bevor Sie weitermachen.',
+    done: 'Was getan wurde:',
+    hide: 'Ausblenden',
+  },
 };

@@ -161,4 +161,10 @@ export default {
     expandPanel: 'Expandir el panel',
     collapsePanel: 'Colapsar el panel',
   },
+  dataHealth: {
+    title: 'Problema con los archivos de datos del tablero',
+    intro: 'El tablero encontró problemas en sus archivos de datos o en sus instantáneas. No se sobrescribió nada: los archivos dañados se conservaron aparte. Revísalos antes de seguir.',
+    done: 'Qué se hizo:',
+    hide: 'Ocultar',
+  },
 };

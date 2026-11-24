@@ -161,4 +161,10 @@ export default {
     expandPanel: 'Expand the panel',
     collapsePanel: 'Collapse the panel',
   },
+  dataHealth: {
+    title: 'Problem with the data files of the board',
+    intro: 'The board found problems with its data files or its snapshots. Nothing was overwritten: damaged files were kept aside. Check them before you carry on.',
+    done: 'What was done:',
+    hide: 'Hide',
+  },
 };

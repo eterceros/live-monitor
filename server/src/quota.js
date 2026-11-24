@@ -18,8 +18,10 @@
  * States: `held → draining → released`.
  */
 
+import './bootsnapshot.js';   // first: the start-up snapshot comes before any write
 import { EventEmitter } from 'node:events';
-import { readFileSync, writeFileSync, renameSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeDurableSync } from './durable.js';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
 import { coerceKey, keyOf, parseKey } from './keys.js';
@@ -149,9 +151,7 @@ function write(value) {
     rmSync(file, { force: true });
     return;
   }
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
-  renameSync(tmp, file);
+  writeDurableSync(file, JSON.stringify(value, null, 2), { tmp: `${file}.${process.pid}.tmp` });
 }
 
 function save() {

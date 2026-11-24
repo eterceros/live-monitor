@@ -1,3 +1,4 @@
+import './bootsnapshot.js';   // first: the start-up snapshot comes before any write
 import { EventEmitter } from 'node:events';
 import { readFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -13,7 +14,16 @@ import { DEFAULT_PROJECT_ID, coerceKey, isProjectId, keyOf, tasksFileOf } from '
 import { SerCache, objectChunks, writeAtomicSync, writeChunksAtomic } from './persistcache.js';
 import {
   SPLIT_MARK, coreText, heavyChunks, heavyItems, heavyPath, mergeHeavy, readHeavy, quarantine, ensureHeavyDir, backupOnce, scopeOf,
+  asideUnadopted, newerDataFiles,
 } from './splitfmt.js';
+import { readJsonDurable, quarantine as moveAside } from './durable.js';
+import { reportDataProblem, reportRead } from './datahealth.js';
+
+/**
+ * Previous versions kept of each tasks file and data file (a hard link, no copy:
+ * `durable.js`). One is enough to survive a cut; history is what backups are for.
+ */
+const GENERATIONS = 1;
 
 /**
  * One tasks file per project, the union in one object.
@@ -322,9 +332,17 @@ class Store extends EventEmitter {
     const orphans = {};
     this.#projects.set(projectId, { orphans });
     const file = tasksFile(projectId);
-    // A half-written file still throws here, as it always has: the board
-    // refusing to boot is better than one silently missing its tasks.
-    const raw = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) ?? {} : {};
+    // A file a power cut left unreadable is read from its previous version, and
+    // moved aside. With no usable previous version it still throws, as it always
+    // has, and stays where it is: a board that started with the project empty
+    // would detect its assigned issues again and start them over.
+    const read = readJsonDurable(file, { generations: GENERATIONS, aside: 'recovered' });
+    if (read.status === 'failed') {
+      const why = read.problems.map((p) => `${path.basename(p.file)}: ${p.problem}`).join('; ');
+      throw new Error(`${file} cannot be read and has no usable previous version (${why}). The board does not start rather than lose the tasks of project "${projectId}": restore that file from a backup, or move it away to start the project empty.`);
+    }
+    reportRead(file, read, `The tasks of project "${projectId}"`);
+    const raw = read.status === 'ok' ? read.value ?? {} : {};
     let legacy = false;
     for (const [fileKey, task] of Object.entries(raw)) {
       if (!task || typeof task !== 'object') { orphans[fileKey] = task; continue; }
@@ -338,7 +356,21 @@ class Store extends EventEmitter {
       if (task[SPLIT_MARK]) this.#loadHeavy(file, fileKey, task); else legacy = true;
       this.tasks[key] = task;
     }
-    if (legacy) this.#legacy.add(projectId);
+    if (legacy) {
+      this.#legacy.add(projectId);
+      // An old copy restored over a split file: its data files are newer than it,
+      // and converting it would overwrite them with the older history. It is kept
+      // in the old format (written as such, data files untouched) until someone decides.
+      const newer = newerDataFiles(DATA_DIR, scopeOf(file), read.source ?? file, Object.keys(raw));
+      if (newer.length) {
+        this.#noSplit.add(projectId);
+        reportDataProblem({
+          file,
+          problem: `The tasks of project "${projectId}" are in the old one-file format, but the data files of ${newer.length} of them (${newer.slice(0, 5).join(', ')}${newer.length > 5 ? ', …' : ''}) are newer than it: it looks like an older copy restored over newer data`,
+          action: 'Not converted, so the newer data files are not overwritten; the file keeps being saved in the old format. Compare them and restore the right copy.',
+        });
+      }
+    }
   }
 
   /**
@@ -369,9 +401,26 @@ class Store extends EventEmitter {
    */
   #loadHeavy(file, fileKey, task) {
     const r = readHeavy(DATA_DIR, scopeOf(file), fileKey);
+    if (r.ok && r.recovered) {
+      // The data file was damaged and its previous version was whole: that one is
+      // used, and the damaged one is kept aside so the next write does not replace it.
+      const kept = moveAside(r.file, 'corrupt');
+      reportDataProblem({
+        file: r.file,
+        problem: `The history of task ${fileKey} (${scopeOf(file)}) could not be read (${r.recovered.error})`,
+        action: `Loaded from its previous version ${path.basename(r.recovered.from)}; the last few seconds before it may be missing.${kept ? ` The damaged file was kept as ${path.basename(kept)}.` : ''}`,
+      });
+    }
     if (!r.ok) {
       const aside = r.reason === 'corrupt' ? quarantine(r.file) : null;
-      console.error(`[store] ${file}: la tarea ${fileKey} está dividida pero ${r.file} está ${r.foreign ? 'a nombre de otro id (no se lee)' : r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); ${aside ? `movido a ${aside}` : 'NO se pudo apartar'}`}; arranca sin historial (la copia .pre-split.bak lo conserva)`);
+      console.error(`[store] ${file}: la tarea ${fileKey} está dividida pero ${r.file} está ${r.foreign ? 'a nombre de otro id (no se lee)' : r.reason === 'missing' ? 'ausente' : `ilegible (${r.error}); ${aside ? `movido a ${aside}` : 'NO se pudo apartar'}`}; arranca sin historial (la copia .pre-split.bak, si existe, tiene el de la fecha de la conversión)`);
+      if (!r.foreign) {
+        reportDataProblem({
+          file: r.file,
+          problem: `The history of task ${fileKey} (${scopeOf(file)}) is ${r.reason === 'missing' ? 'missing' : `unreadable (${r.error})`} and has no usable previous version`,
+          action: `The task starts without its log and chat messages.${aside ? ` The damaged file was kept as ${path.basename(aside)}.` : r.reason === 'corrupt' ? ' The damaged file could NOT be moved aside.' : ''} A .pre-split.bak, if there is one, holds the history as of the conversion only.`,
+        });
+      }
       delete task[SPLIT_MARK];
       return;
     }
@@ -516,18 +565,23 @@ class Store extends EventEmitter {
     const chunks = this.#heavyOf(task);
     ensureHeavyDir(file);
     if (skipIfSame && sameAsFile(file, chunks)) return;
+    asideUnadopted(file, `Task ${task.issue} (${task.project})`);
     const seq = this.#nextSeq(file);
-    writeAtomicSync(file, chunks);
+    writeAtomicSync(file, chunks, { generations: GENERATIONS });
     this.#seqLanded.set(file, seq);
     if (verify && readFileSync(file, 'utf8') !== chunks.join('')) {
       throw new Error(`${file}: what was written does not match what was read back`);
     }
   }
 
-  #writeCoreSync(projectId, opts) {
+  #writeCoreSync(projectId, { skipIfSame = false, ...opts } = {}) {
     const file = tasksFile(projectId);
+    const chunks = this.#coreChunks(projectId, opts);
+    // The boot's write of a file that did not change: skipped, so a restart does
+    // not rotate an identical copy into `.bak` (and wears nothing).
+    if (skipIfSame && sameAsFile(file, chunks)) return;
     const seq = this.#nextSeq(file);
-    writeAtomicSync(file, this.#coreChunks(projectId, opts));
+    writeAtomicSync(file, chunks, { generations: GENERATIONS });
     this.#seqLanded.set(file, seq);
   }
 
@@ -561,7 +615,7 @@ class Store extends EventEmitter {
       const task = this.tasks[key];
       if (task) this.#writeHeavySync(task, { skipIfSame: this.#bootFlush });
     }
-    return this.#writeCoreSync(projectId);
+    return this.#writeCoreSync(projectId, { skipIfSame: this.#bootFlush });
   }
 
   #revalidateAll() {
@@ -677,13 +731,14 @@ class Store extends EventEmitter {
             const file = this.#heavyFile(task);
             const chunks = this.#heavyOf(task);   // a snapshot: immutable strings from here on
             ensureHeavyDir(file);
+            asideUnadopted(file, `Task ${task.issue} (${task.project})`);
             const seq = this.#nextSeq(file);
-            if (await writeChunksAtomic(file, chunks, () => this.#current(file, seq))) this.#seqLanded.set(file, seq);
+            if (await writeChunksAtomic(file, chunks, () => this.#current(file, seq), { generations: GENERATIONS })) this.#seqLanded.set(file, seq);
           }
           const file = tasksFile(projectId);
           const parts = this.#coreChunks(projectId);
           const seq = this.#nextSeq(file);
-          if (await writeChunksAtomic(file, parts, () => this.#current(file, seq))) this.#seqLanded.set(file, seq);
+          if (await writeChunksAtomic(file, parts, () => this.#current(file, seq), { generations: GENERATIONS })) this.#seqLanded.set(file, seq);
         } catch (e) {
           this.#dirty.add(projectId);
           for (const k of keys) this.#heavyDirty.add(k);
