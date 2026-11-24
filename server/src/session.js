@@ -157,6 +157,23 @@ export class ChatSession {
     });
   }
 
+  /**
+   * The slash commands this session's CLI offers (`SlashCommand[]`: name,
+   * description, argumentHint, aliases, builtin). A control request, not a
+   * prompt: no turn, no cost. With no process up one is opened for it — the
+   * next `send` reuses it — and the idle timer is armed so a list asked for
+   * and never followed by a prompt does not leave a process behind for good.
+   */
+  async commands() {
+    if (!this.#alive) this.#open();
+    const q = this.#query;
+    try {
+      return await q.supportedCommands();
+    } finally {
+      this.#armIdle();
+    }
+  }
+
   /** Cuts the turn in flight. The process stays up for the next prompt. */
   async interrupt() {
     if (!this.#alive || !this.#query) throw new Error('There is no turn in progress');

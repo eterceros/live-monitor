@@ -636,9 +636,30 @@ function dispatchSystem(message, ctx) {
       onEvent?.({
         kind: 'init', sessionId: ctx.sessionId, model: message.model,
         requested: ctx.requestedModel ?? null, changed: note.changed, previous: note.previous,
+        // Commands whose UX is bound to a terminal: a chat refuses them.
+        terminalCommands: Array.isArray(message.terminal_slash_commands) ? message.terminal_slash_commands : [],
       });
       break;
     }
+    // The command list changed mid-session (a skill found in a subdirectory):
+    // the payload replaces whatever list the listener cached.
+    case 'commands_changed':
+      if (Array.isArray(message.commands)) onEvent?.({ kind: 'commands', commands: message.commands });
+      break;
+    // `/compact`, or the CLI compacting by itself: the status while it runs,
+    // the boundary with the token counts when it is done.
+    case 'status':
+      onEvent?.({
+        kind: 'status', status: message.status ?? null,
+        compactResult: message.compact_result ?? null, compactError: message.compact_error ?? null,
+      });
+      break;
+    case 'compact_boundary':
+      onEvent?.({
+        kind: 'compact', trigger: message.compact_metadata?.trigger ?? null,
+        preTokens: message.compact_metadata?.pre_tokens ?? null, postTokens: message.compact_metadata?.post_tokens ?? null,
+      });
+      break;
     // A command sent to the background, or a subagent: it has a life of its
     // own past the tool call that started it, and reports through these.
     case 'task_started':

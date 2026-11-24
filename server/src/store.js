@@ -1035,6 +1035,24 @@ class Store extends EventEmitter {
   }
 
   /**
+   * Empties one conversation's messages. In place (`splice`), never a new
+   * array: the live session and the panels hold this one. The write is a full
+   * one (no hint): the serialized messages the persister keeps are no longer
+   * true, and an `'append'` write would put them back. The panels hear
+   * `chat-reset`, with the same arguments as `chat-update`.
+   */
+  resetChat(task, chat) {
+    chat.messages.splice(0);
+    this.touch(task);
+    const change = { messages: 0 };
+    if (task.kind === 'project') {
+      this.emit('chat-reset', null, chat.id, change, task.project, Store.#holderExtra(task));
+      return;
+    }
+    this.emit('chat-reset', task.issue, chat.id, change, task.project);
+  }
+
+  /**
    * A message changed in place — a bubble learning how it was delivered, an
    * activity tree gaining an item. Only the change travels: `patch` for a
    * message's own fields, `item` (+ `parentId`) for one node of the tree, so
