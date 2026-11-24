@@ -523,3 +523,48 @@
 @media (prefers-reduced-motion: reduce) {
   .mic.listening, .speaker.speaking { animation: none; }
 }
+
+/* ---- Slash-command menu, over the input box ----------------------------- */
+.cp-cmd-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 5;
+  border-radius: var(--r-kpi);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-pop), inset 0 0 0 1px var(--line-strong);
+  overflow: hidden;
+}
+.cp-cmd-list {
+  max-height: min(320px, 45dvh);
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+.cp-cmd-group {
+  padding: 6px 12px 2px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted);
+}
+.cp-cmd-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.cp-cmd-row.is-active { background: var(--tint-neutral-hover); }
+.cp-cmd-name { font-family: var(--font-mono); color: var(--text); white-space: nowrap; }
+.cp-cmd-hint { font-family: var(--font-mono); color: var(--faint); white-space: nowrap; }
+.cp-cmd-desc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.cp-cmd-empty { padding: 6px 12px; color: var(--muted); }
+.cp-tools .cp-cmd-btn.is-on { color: var(--accent); }
+@media (max-width: 640px) {
+  .cp-cmd-row { grid-template-columns: auto minmax(0, 1fr); }
+  .cp-cmd-hint { display: none; }
+}

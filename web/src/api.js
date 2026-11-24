@@ -179,6 +179,10 @@ export const api = {
   closeChat: (owner, chatId) => send(`${B(owner)}/chats/${chatId}/close`),
   reopenChat: (owner, chatId) => send(`${B(owner)}/chats/${chatId}/reopen`),
   deleteChat: (owner, chatId) => send(`${B(owner)}/chats/${chatId}/delete`),
+  // Empties a conversation, messages and the model's context: `{ cleared, messages }`.
+  clearChat: (owner, chatId) => send(`${B(owner)}/chats/${chatId}/clear`),
+  // The slash commands the chat can type: `{ commands: [{ name, description, argumentHint, aliases, source }], complete }`.
+  chatCommands: (owner, chatId) => get(`${B(owner)}/chats/${chatId}/commands`),
   stopChat: (owner, chatId) => send(`${B(owner)}/chat/stop`, { chatId }),
   // Model, effort and thinking are per chat. `fields` carries only the keys to
   // write (always the current `model` among them): a key left out keeps its value.

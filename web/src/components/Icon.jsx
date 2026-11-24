@@ -7,7 +7,7 @@ import {
   GitPullRequest, Hand, History, Hourglass, Image, Inbox, Info, KeyRound, LayoutGrid, Layers, Lightbulb, Link,
   LoaderCircle, Lock, MapPin, Maximize2, Menu, MessageSquare, Mic, Minimize2, Minus, Moon, Palette,
   Paperclip, Pause, Pencil, Pin, Play, Plug, Plus, Puzzle, Recycle, Redo2, RefreshCw, Repeat, Rocket,
-  RotateCcw, ScrollText, Search, Server, Settings, SkipForward, SlidersHorizontal, Sprout, Terminal,
+  RotateCcw, ScrollText, Search, Server, Settings, SkipForward, Slash, SlidersHorizontal, Sprout, Terminal,
   Timer, Trash2, TreeDeciduous, TriangleAlert, Truck, Undo2, User, Volume2, VolumeX, Wrench, X, Zap,
 } from 'lucide-react';
 
@@ -102,6 +102,7 @@ import {
  *   ↪                    forward          Redo2
  *   ⊘ ↷                  ban              Ban              (skipped / omitted)
  *   (terminal)           terminal         Terminal
+ *   /                    slash            Slash            (the chat's slash-command menu)
  *   (server)             server           Server
  *   (none)               layers           Layers           (stacked sets, e.g. grouped items)
  *   (none)               minimize         Minimize2        (task-card expand → minimize)
@@ -208,6 +209,7 @@ const ICONS = {
   forward: Redo2,
   ban: Ban,
   terminal: Terminal,
+  slash: Slash,
   server: Server,
   layers: Layers,
   minimize: Minimize2,
