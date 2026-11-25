@@ -2034,6 +2034,11 @@ export const conflictHooks = {
   resolveRef: (...args) => resolveRef(...args),
   analyzeMerge: (...args) => analyzeMerge(...args),
   mergeBlockers: (...args) => mergeBlockers(...args),
+  /** Whether HEAD and `mainSha` hold the same files: the branch adds nothing to the base. */
+  sameTree: async (machine, cwd, mainSha) => {
+    const [mine, theirs] = await Promise.all([resolveRef(machine, cwd, 'HEAD^{tree}'), resolveRef(machine, cwd, `${mainSha}^{tree}`)]);
+    return Boolean(mine && mine === theirs);
+  },
   verify: (...args) => verifyMergeResolution(...args),
   rollback: (...args) => rollbackMergeAttempt(...args),
   push: (task, machine, cwd) => withInfraRetries(task, 'merge', 'the push', () => pushBranch(machine, cwd, task.branch, { onLine: (l) => store.addLog(task, 'merge', l) })),
@@ -2224,6 +2229,23 @@ async function runConflictResolution(task) {
 
     const check = await conflictHooks.verify(machine, cwd, { headBefore, mainSha, files: verdict.conflicts });
     if (!check.ok) throw new Error(`the resolution did not pass its checks: ${check.problems.join('; ')}`);
+
+    // The merge can leave the branch with nothing of its own: the work already
+    // landed in the base by another road (its PR merged, a cherry-pick). There
+    // is then nothing to test or to push, and the suite could only answer
+    // «nothing changed» and send a fix session after a failure that is not one
+    // (EHR #686). The attempt is undone like any that is not pushed, and the
+    // card is told, so a person can close what is already done.
+    if (await conflictHooks.sameTree(machine, cwd, mainSha)) {
+      const restored = await conflictHooks.rollback(machine, cwd, headBefore).catch(() => false);
+      if (!restored) store.addLog(task, 'merge', `⚠️ could not put the branch back at ${String(headBefore).slice(0, 8)}: check the worktree`);
+      const reason = `after merging origin/${base} the branch adds nothing: its work is already there`;
+      task.conflictRun = { ...run, status: 'already_in_base', mainSha, said: true, reason };
+      store.addLog(task, 'merge', `${reason}; no tests were run and nothing was pushed`);
+      say(`ℹ️ **The work of this branch is already in origin/${base}.** After merging it the branch adds nothing, so I ran no tests and pushed nothing. If the task is finished, close its issue or PR.`);
+      store.touch(task);
+      return;
+    }
 
     // The fix is still done, and the tests that passed ran on code that had not
     // met the base: the suite is needed again, only for what the diff touches.
