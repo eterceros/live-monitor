@@ -57,9 +57,10 @@ import { canAutoStart, modeOf, resumeStateFor, keepsForced, newestFirst, SETTABL
 import {
   principalChat, chatById, isChatBusy, addChatTo, removeChat, titleFromPrompt, chatsOf,
   busySiblings, openChats, chatRunning, renderSiblings, tellSiblings, drainNews, leaveNote, drainNotes,
-  closeChatOf, reopenChatOf,
+  closeChatOf, reopenChatOf, UNTITLED,
 } from './chats.js';
 import { ChatSession } from './session.js';
+import { parseCommand, boardCommand, isDenied, resolveCommand, mergeCommandList, helpText } from './chatcommands.js';
 import { chatStopHooks } from './pushguard.js';
 import { newActivity, applyEvent, setOutput, closeAll, activityLabel, findItem, treeFor, mergeAgentCalls, markStopping, MAX_OUTPUT } from './activity.js';
 import { transcriptCandidates, parseAgentTranscript } from './subagents.js';
@@ -7571,6 +7572,7 @@ function onChatEvent(task, chat, live, ev) {
       // every notification. Saying it once is enough.
       if (!live.ownTurn && chat.messages.filter((m) => m.role === 'assistant').slice(-5).some((m) => m.text === said)) return;
       store.addChat(task, chat.id, 'assistant', said);
+      if (live.commandTurn) live.commandTurn.said = true;
       chat.activity = 'drafting the reply…';
       return;
     }
@@ -7588,7 +7590,29 @@ function onChatEvent(task, chat, live, ev) {
       }
       return;
 
-    case 'init': case 'result': case 'warn':
+    case 'init':
+      // What the CLI says only a terminal can run: the chat refuses those.
+      if (ev.terminalCommands?.length) live.terminalCommands = ev.terminalCommands;
+      return;
+
+    case 'commands':
+      // The CLI found more (a skill in a subdirectory): its list replaces ours.
+      live.commands = ev.commands;
+      return;
+
+    case 'status':
+      if (ev.status === 'compacting') {
+        chat.activity = 'compacting the conversation…';
+        store.touch(task);
+      }
+      if (ev.compactResult === 'failed' && live.commandTurn) live.commandTurn.compactError = ev.compactError || 'compaction failed';
+      return;
+
+    case 'compact':
+      if (live.commandTurn) live.commandTurn.compact = { pre: ev.preTokens, post: ev.postTokens };
+      return;
+
+    case 'result': case 'warn':
       return;
 
     case 'session_closed': {
@@ -7706,6 +7730,22 @@ export function sendChat(issue, chatId, text, attachments = [], { voice = false 
     store.touch(task);
     return;
   }
+  // A slash command (`chatcommands.js`). The CLI's own commands do reach a
+  // session driven through the SDK — `/compact`, `/context`, the project's
+  // commands and skills all run — but a few would change the session behind
+  // the chat's back, and the board answers those itself. Before the quota
+  // gate (none of the board's needs a model) and before the title: a chat
+  // whose first message was `/model` used to be called «model».
+  const command = parseCommand(text);
+  const own = command && boardCommand(command.name);
+  if (own) {
+    runBoardCommand(task, chat, own.name, command.args);
+    return;
+  }
+  if (command && isDenied(command.name)) {
+    store.addChat(task, chat.id, 'assistant', deniedCommandText(command.name));
+    return;
+  }
   // And the same out of quota. Deliberately *not* queued: a message you typed
   // now must not reach a model by itself three hours from now, when what you
   // were asking about has moved on. It stays in the panel with the reason.
@@ -7718,21 +7758,8 @@ export function sendChat(issue, chatId, text, attachments = [], { voice = false 
   // The first thing you ask is what the conversation is about, and it reads
   // better on a tab than "Chat 2".
   // Unless a person named it already: a title they typed is never overwritten.
-  if (['Untitled', 'Sin título'].includes(chat.title) && !chat.titleManual) chat.title = titleFromPrompt(text, chat.title);
-
-  // `/model …` is handled here rather than sent to Claude: the CLI's own slash
-  // commands do not reach a session driven through the SDK, so typing one just
-  // asked the model to do something it cannot do to itself.
-  const command = text.match(/^\/model\b\s*(.*)$/i);
-  if (command) {
-    handleModelCommand(task, chat, command[1].trim());
-    return;
-  }
-  const planCommand = text.match(/^\/plan\b\s*(.*)$/i);
-  if (planCommand) {
-    handlePlanCommand(task, chat, planCommand[1].trim());
-    return;
-  }
+  // A command names nothing: `/compact` is not what the conversation is about.
+  if (!command && ['Untitled', 'Sin título'].includes(chat.title) && !chat.titleManual) chat.title = titleFromPrompt(text, chat.title);
 
   // Typed while a turn runs: it does not wait behind the turn, it reaches the
   // model at its next tool call and gets answered in line. If the turn ends
@@ -7743,11 +7770,103 @@ export function sendChat(issue, chatId, text, attachments = [], { voice = false 
   const planRunning = ['running', 'asking'].includes(chat.plan?.status);
   const lk = liveKey(ownerKeyOf(task), chat.id);
   if (planRunning || starting.has(lk) || (chat.busy && liveChats.get(lk)?.session.alive)) {
+    // Not a command: as a note it would reach the model as plain text, glued
+    // to whatever else was waiting.
+    if (command) {
+      store.addChat(task, chat.id, 'assistant', '⚠️ Commands cannot run while the chat is working; stop it or wait.');
+      return;
+    }
     leaveNote(chat, text, message.id, attachments, { voice });
     store.updateChat(task, chat, message, { patch: { delivery: 'pending' } });
     return;
   }
-  runTurn(task, chat, text, attachments, { voice });
+  runTurn(task, chat, text, attachments, { voice, command });
+}
+
+/** How long the session's command list may take before the menu makes do without it. */
+const COMMANDS_TIMEOUT_MS = 20_000;
+
+/** The session's command list, or a throw when it does not come in time (a process that never started). */
+function listCommandsOf(live) {
+  let timer;
+  return Promise.race([
+    live.session.commands(),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('the session did not list its commands in time')), COMMANDS_TIMEOUT_MS); timer.unref?.(); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * A command that ran and said nothing — `/compact` answers with an empty
+ * result and no assistant text — still leaves a line in the chat, or the
+ * person is left wondering whether it ran at all. A command whose output was
+ * the result text (`/context`, `/usage`) gets that text as its bubble.
+ */
+function noteCommandDone(task, chat, live, name, resultText) {
+  const turn = live.commandTurn;
+  if (!turn || turn.said) return;
+  if (turn.compactError) {
+    store.addChat(task, chat.id, 'assistant', `⚠️ /${name} failed: ${turn.compactError}`);
+    return;
+  }
+  const out = String(resultText ?? '').trim();
+  if (out) {
+    store.addChat(task, chat.id, 'assistant', out);
+    return;
+  }
+  const c = turn.compact;
+  const tokens = (n) => (Number.isFinite(n) ? `${Math.round(n / 1000)}k` : null);
+  const detail = c && tokens(c.pre) ? ` (context ${tokens(c.pre)}${tokens(c.post) ? ` → ${tokens(c.post)}` : ''} tokens)` : '';
+  store.addChat(task, chat.id, 'assistant', `✓ /${name} done${detail}`);
+}
+
+/** The refusal for a command the board keeps for itself. */
+const deniedCommandText = (name) => `⚠️ /${name} is not run from the chat: use the board's control for it (the model and effort picker, the tab's name, the settings).`;
+
+/** `/clear`, `/model`, `/plan`, `/help`: answered here, no session involved. */
+function runBoardCommand(task, chat, name, args) {
+  switch (name) {
+    case 'clear':
+      try {
+        clearChat(ownerKeyOf(task), chat.id);
+      } catch (e) {
+        store.addChat(task, chat.id, 'assistant', `⚠️ ${e.message}`);
+      }
+      return;
+    case 'model':
+      handleModelCommand(task, chat, args);
+      return;
+    case 'plan':
+      handlePlanCommand(task, chat, args);
+      return;
+    default:
+      store.addChat(task, chat.id, 'assistant', helpText());
+  }
+}
+
+/**
+ * The commands a chat can type, for the composer's menu: the board's own, then
+ * what this chat's session lists. Asking opens the session's process when it
+ * is not up (a control request: no turn, no cost; the process idles out as
+ * usual) — but never builds a worktree, and never a holder's: with no place
+ * to run the session the answer is the board's commands, `complete: false`.
+ */
+export async function chatCommands(issue, chatId) {
+  const task = chatOwnerOf(issue);
+  if (!task) throw new Error(unknownOwner(issue));
+  const chat = chatById(task, chatId);
+  if (!chat) throw new Error('That chat does not exist');
+  const partial = { commands: mergeCommandList([]), complete: false };
+  if (movingReason(task) || upgradeRunning()) return partial;
+  if (isHolder(task) ? !task.worktreePath : !(await isProjectWorktree(machineOf(task), task.worktreePath))) return partial;
+  let live;
+  try {
+    live = liveOf(task, chat);
+    live.commands ??= await listCommandsOf(live);
+  } catch (e) {
+    store.addLog(task, 'chat', `⚠️ could not list the commands of «${chat.title}» (${reasonOf(e)})`);
+    return partial;
+  }
+  return { commands: mergeCommandList(live.commands, { terminal: live.terminalCommands ?? [] }), complete: true };
 }
 
 /**
@@ -7778,6 +7897,8 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
   // closes live sessions. The notes stay for the first turn after arriving.
   if (movingReason(task)) return;
   if (!text && !(chat.notes ?? []).length) return;
+  // A slash command (`{ name, args }`, from `sendChat`): sent alone, see below.
+  const command = opts.command ?? null;
   const holder = isHolder(task);
   const startKey = liveKey(ownerKeyOf(task), chat.id);
   const startToken = {};
@@ -7847,12 +7968,40 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
         + 'Press «🌳 Create worktree» to prepare it and send it again.');
       return;
     }
-    ({ text, attachments, voice: turnVoice } = withNotes(task, chat, text, attachments, turnVoice));
-    // What the siblings did while this chat was away, worked out now rather
-    // than pre-cooked.
-    const siblings = await siblingsBriefing(task, chat);
+    // A slash command goes to the session as typed, alone: no notes before it
+    // and no rules after it — the CLI reads everything after the name as the
+    // command's arguments. It is checked against the session's own list first:
+    // a name the CLI does not know would reach the model as plain text.
+    if (command) {
+      // The tuning is handed over before the list opens the process, as the
+      // send below would have done.
+      if (!live.session.alive) {
+        const t = chatSessionTuning(task, chat, 'chat');
+        await live.session.retune({ model: t.model, effort: t.effort ?? null, thinking: t.thinking ?? null });
+      }
+      live.commands ??= await listCommandsOf(live);
+      const row = resolveCommand(live.commands, command.name);
+      if (row && isDenied(row.name, live.terminalCommands ?? [])) {
+        store.addChat(task, chat.id, 'assistant', deniedCommandText(command.name));
+        return;
+      }
+      if (!row) {
+        store.addChat(task, chat.id, 'assistant', `⚠️ Unknown command /${command.name}. Type / to see the list.`);
+        return;
+      }
+      command.row = row;
+      chat.activity = `running /${row.name}…`;
+      store.touch(task);
+    }
+    let siblings = '';
+    if (!command) {
+      ({ text, attachments, voice: turnVoice } = withNotes(task, chat, text, attachments, turnVoice));
+      // What the siblings did while this chat was away, worked out now rather
+      // than pre-cooked.
+      siblings = await siblingsBriefing(task, chat);
+    }
     headBefore = await headCommit(machineOf(task), task.worktreePath);
-    drainNews(chat);   // the briefing above already covers everything until now
+    if (!command) drainNews(chat);   // the briefing above already covers everything until now
 
     // Uploads land on this machine; Claude reads them on the task's. For a
     // local task that is the same place and `putAttachment` hands the path back.
@@ -7885,7 +8034,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       const t = chatSessionTuning(task, chat, 'chat');
       await live.session.retune({ model: t.model, effort: t.effort ?? null, thinking: t.thinking ?? null });
     }
-    const rules = holder
+    const rules = command ? null : holder
       ? renderPrompt('chat-project-rules', {
         ...promptVarsFor(task, 'chat'),
         text,
@@ -7916,9 +8065,18 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
           machineName: machine.name, platform: machine.platform, worktreePath: task.worktreePath, wip: chat.handoff?.wip,
         }),
       });
-    const result = await live.session.send(withVoiceRule(rules, turnVoice));
+    // A command is sent by its canonical name (a plugin's command typed without
+    // its prefix included). Attachments ride only on the commands that are
+    // prompts in disguise — the project's, the skills' — never on a built-in.
+    const prompt = command
+      ? `/${command.row.name}${command.args ? ` ${command.args}` : ''}${command.row.builtin ? '' : attachmentsNote(placed)}`
+      : withVoiceRule(rules, turnVoice);
+    live.commandTurn = command ? { said: false, compact: null, compactError: null } : null;
+    const result = await live.session.send(prompt);
     turnStats = result.stats ?? null;
     turnCounts = result.toolCounts ?? null;
+    if (command && result.ok) noteCommandDone(task, chat, live, command.row.name, result.resultText);
+    live.commandTurn = null;
     if (!result.ok && /No conversation found/i.test(result.error ?? '')) {
       // The session this chat resumes is gone from this machine — the CLI
       // deletes transcripts after 30 days — and every later turn would fail
@@ -7933,7 +8091,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       chat.sessionId = null;
       chat.forkPending = false;
       closeLiveSession(ownerKeyOf(task), chat.id);
-      if (!opts.healed) heal = { text, attachments, voice: turnVoice };
+      if (!opts.healed) heal = { text, attachments, voice: turnVoice, command: opts.command ?? null };
       store.addChat(task, chat.id, 'assistant', opts.healed
         ? '⚠️ The previous conversation no longer exists on this machine and the new session did not start either. Send the message again.'
         : '⚠️ The previous conversation no longer exists on this machine: the chat starts from scratch and the message is resent to a new session.');
@@ -7988,7 +8146,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       : { outcome: turnOutcome, ...chatCallMeta(turnCounts) });
     // Right away, so the chat never looks idle between the two sends. Once:
     // a second "no conversation" on a session with no id is not this problem.
-    if (heal) runTurn(task, chat, heal.text, heal.attachments, { healed: true, voice: heal.voice });
+    if (heal) runTurn(task, chat, heal.text, heal.attachments, { healed: true, voice: heal.voice, command: heal.command });
     // What this turn left behind, told to the others and remembered as this
     // chat's own high-water mark.
     //
@@ -8312,6 +8470,58 @@ export function deleteChat(issue, chatId) {
   store.addLog(task, 'chat', `chat «${chat.title}» deleted (${chat.messages.length} messages)`);
   store.touch(task);
   return true;
+}
+
+/**
+ * Empties a conversation: its messages and the model's context. The tab, the
+ * id, the model, effort and thinking stay; the session is let go (the process
+ * closed, the id forgotten) so the next prompt starts a conversation of its
+ * own. Not undone, and not everything goes: the attachments on disk, the
+ * CLI's transcript, the backups and the task's log are left as they are.
+ *
+ * Refused while the chat is doing anything, and on a task's Main while the
+ * pipeline runs: the phases resume that chat's session and post the task's
+ * plan bubble into it.
+ */
+export function clearChat(issue, chatId) {
+  assertNoUpgradeRunning();
+  const task = chatOwnerOf(issue);
+  if (!task) throw new Error(unknownOwner(issue));
+  const chat = chatById(task, chatId);
+  if (!chat) throw badRequest('That chat does not exist');
+  assertNotMoving(task);
+  if (chat.closedAt) throw badRequest('That chat is closed: reopen it before emptying it');
+  const lk = liveKey(ownerKeyOf(task), chat.id);
+  if (chat.busy || starting.has(lk) || ['running', 'asking'].includes(chat.plan?.status)) {
+    throw badRequest('That chat is working; stop it before emptying it');
+  }
+  if (chat.pending) throw badRequest('That chat is waiting for an answer; answer or skip it before emptying it');
+  if (!isHolder(task) && chat === principalChat(task)
+    && (running.has(keyOf(task)) || ACTIVE_STATES.includes(task.state) || task.pending || task.planning)) {
+    throw badRequest('The board is working on this task through its main chat; empty it when the task is idle');
+  }
+  const count = chat.messages.length;
+  // First what could start a turn by itself: `session_closed` runs one when notes are waiting.
+  chat.notes = [];
+  chat.news = [];
+  closeLiveSession(ownerKeyOf(task), chat.id);
+  chat.sessionId = null;
+  chat.forkPending = false;
+  chat.forkedFrom = null;
+  chat.activity = null;
+  chat.busy = false;
+  chat.pending = null;
+  chat.plan = null;
+  chat.planMode = false;
+  chat.handoff = null;
+  chat.lastTurnAt = null;
+  if (task.closable?.chatId === chat.id) task.closable = null;
+  // The Main keeps its name, and so does a name someone typed.
+  if (chat !== principalChat(task) && !chat.titleManual) chat.title = UNTITLED;
+  store.resetChat(task, chat);
+  store.addLog(task, 'chat', `chat «${chat.title}» emptied (${count} message${count === 1 ? '' : 's'})`);
+  store.flush();
+  return { cleared: true, messages: count };
 }
 
 /** Stops the chat turn in flight — a tool call can run for many minutes. */

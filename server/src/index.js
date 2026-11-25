@@ -13,7 +13,7 @@ import {
   forceStart, detectExistingWork, ensureWorktree, interruptChat, setChatModel, chatEffectiveEffort, setMode,
   setActiveChangeRequest, resolveChangeRequest, startChangeRequest,
   draftReviewReplies, discardReviewReplies, bringMainNow, pushNow, askMergeHelp,
-  createChat, closeChat, reopenChat, deleteChat, setTaskMachine, machineStatus,
+  createChat, closeChat, reopenChat, deleteChat, clearChat, chatCommands, setTaskMachine, machineStatus,
   runBrowserQa, setBrowserQa, qaInfo, qaEvidence, qaWanted, acceptFix, publishPr,
   setDemo, demoWanted,
   answerChatPending, setChatPlanMode, stopChatPlan, continueChatPlan,
@@ -941,6 +941,24 @@ app.post('/api/projects/:project/tasks/:issue/chats/:chatId/delete', withTask((t
   }
 }));
 
+// Emptying a conversation (`/clear`, «Vaciar»): `{ cleared, messages }`.
+app.post('/api/projects/:project/tasks/:issue/chats/:chatId/clear', withTask((task, req, res) => {
+  try {
+    res.json(clearChat(keyOf(task), req.params.chatId));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+}));
+
+// The slash commands a chat can type, for the composer's menu.
+app.get('/api/projects/:project/tasks/:issue/chats/:chatId/commands', withTask(async (task, req, res) => {
+  try {
+    res.json(await chatCommands(keyOf(task), req.params.chatId));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+}));
+
 // Renaming a conversation: the same body for a task's chat and a project chat's.
 app.post('/api/projects/:project/tasks/:issue/chats/:chatId/rename', withTask((task, req, res) => {
   try {
@@ -1642,6 +1660,20 @@ app.post(`${HB}/chats/:chatId/delete`, withHolder((holder, req, res) => {
     res.status(400).json({ error: e.message });
   }
 }));
+app.post(`${HB}/chats/:chatId/clear`, withHolder((holder, req, res) => {
+  try {
+    res.json(clearChat(hkey(holder), req.params.chatId));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+}));
+app.get(`${HB}/chats/:chatId/commands`, withHolder(async (holder, req, res) => {
+  try {
+    res.json(await chatCommands(hkey(holder), req.params.chatId));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+}));
 app.post(`${HB}/chats/:chatId/rename`, withHolder((holder, req, res) => {
   try {
     res.json(renameChat(hkey(holder), req.params.chatId, req.body?.title));
@@ -1807,6 +1839,8 @@ store.on('task', (task) => {
 store.on('log', (issue, entry, project, extra) => broadcast({ type: 'log', project, issue, entry, ...(extra ?? {}) }));
 store.on('chat', (issue, chatId, message, project, extra) => broadcast({ type: 'chat', project, issue, chatId, message, ...(extra ?? {}) }));
 store.on('chat-update', (issue, chatId, update, project, extra) => broadcast({ type: 'chat-update', project, issue, chatId, ...update, ...(extra ?? {}) }));
+// A conversation emptied: the panels showing it drop what they hold.
+store.on('chat-reset', (issue, chatId, change, project, extra) => broadcast({ type: 'chat-reset', project, issue, chatId, ...change, ...(extra ?? {}) }));
 // The store hands over the raw holder; the board receives its summary.
 store.on('project-chat', (holder) => broadcast({ type: 'project-chat', holder: holderSummary(holder) }));
 // Cards carry `browserQaProjectOn` (and the wanted flags), which depend on the

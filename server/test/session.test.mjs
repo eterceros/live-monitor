@@ -573,3 +573,41 @@ test('design llega a las options de cada proceso, también al reabrir; sin él n
     if (prev !== undefined) process.env.CLAUDE_CODE_ENTRYPOINT = prev;
   }
 });
+
+test('commands(): opens a process with no prompt, lists, and the idle timer still lets it go', async () => {
+  const q = fakeQuery({ script: (u) => answer(u.uuid, 'ok') });
+  const list = [{ name: 'compact', description: 'd', argumentHint: '', builtin: true }];
+  const wrapped = (args) => {
+    const gen = q(args);
+    gen.supportedCommands = async () => list;
+    return gen;
+  };
+  const events = [];
+  const s = new ChatSession({ cwd: '.', model: 'm', idleMs: 30, queryFn: wrapped, onEvent: (e) => events.push(e.kind) });
+  assert.deepEqual(await s.commands(), list);
+  assert.equal(q.calls.length, 1, 'one process, opened for the list');
+  assert.equal(s.busy, false, 'no turn of ours');
+  // The same process serves the next prompt.
+  const r = await s.send('hola');
+  assert.equal(r.resultText, 'ok');
+  assert.equal(q.calls.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(s.alive, false, 'idle closes it as usual');
+  assert.ok(events.includes('session_closed'));
+});
+
+test('commands() on its own, never followed by a prompt, does not keep the process', async () => {
+  // As the real CLI does (measured with SDK 0.3.331): no frame at all until a
+  // prompt arrives — the `init` of `fakeQuery` would count as a turn of its own.
+  let closed = false;
+  const wrapped = ({ prompt }) => {
+    const gen = (async function* run() { for await (const _ of prompt) { /* never sent */ } }());
+    return Object.assign(gen, { supportedCommands: async () => [], close: () => { closed = true; gen.return(); } });
+  };
+  const s = new ChatSession({ cwd: '.', model: 'm', idleMs: 30, queryFn: wrapped });
+  await s.commands();
+  assert.equal(s.alive, true);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(s.alive, false);
+  assert.equal(closed, true);
+});

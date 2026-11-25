@@ -269,6 +269,8 @@ export default function App() {
       // A message changing in place: one node of a turn's activity tree, or a
       // bubble learning how it was delivered.
       'chat-update': (msg) => window.dispatchEvent(new CustomEvent('task-chat-update', { detail: msg })),
+      // A conversation emptied (`/clear`, «Vaciar»): its panels drop every message.
+      'chat-reset': (msg) => window.dispatchEvent(new CustomEvent('task-chat-reset', { detail: msg })),
     });
     wsRef.current = ws;
     return () => ws.close();

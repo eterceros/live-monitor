@@ -361,3 +361,69 @@ test('WebSocket: a chat message for a holder that does not exist is dropped, not
     ws.close();
   }
 });
+
+test('emptying a chat: /help answered over the socket, then POST clear empties it and every board hears `chat-reset`', async () => {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const seen = [];
+  ws.on('message', (raw) => seen.push(JSON.parse(raw.toString())));
+  await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+  try {
+    const waitFor = async (pred) => {
+      for (let i = 0; i < 100; i += 1) {
+        const hit = seen.find(pred);
+        if (hit) return hit;
+        await new Promise((r) => { setTimeout(r, 50); });
+      }
+      throw new Error(`no llegó: ${JSON.stringify(seen.map((m) => m.type))}`);
+    };
+    const created = await call('POST', `${H}/chats`, {});
+    const id = created.body.id;
+    // A board command needs no session and no worktree: nothing is spawned here.
+    ws.send(JSON.stringify({ type: 'chat', project: 'hfs', owner: 'project', machine: 'local', chatId: id, text: '/help' }));
+    await waitFor((m) => m.type === 'chat' && m.chatId === id && m.message.role === 'assistant');
+    assert.equal((await call('GET', `${H}/chat?chatId=${id}`)).body.chat.length, 2);
+
+    const cleared = await call('POST', `${H}/chats/${id}/clear`);
+    assert.equal(cleared.status, 200);
+    assert.deepEqual(cleared.body, { cleared: true, messages: 2 });
+    const reset = await waitFor((m) => m.type === 'chat-reset' && m.chatId === id);
+    assert.equal(reset.owner, 'project');
+    assert.equal(reset.machine, 'local');
+    assert.equal(reset.project, 'hfs');
+    assert.equal((await call('GET', `${H}/chat?chatId=${id}`)).body.chat.length, 0);
+
+    assert.equal((await call('POST', `${H}/chats/nope/clear`)).status, 400);
+    assert.equal((await call('POST', '/api/projects/hfs/project-chats/nowhere/chats/x/clear')).status, 404);
+    // A closed chat is refused with its reason.
+    await call('POST', `${H}/chats/${id}/close`);
+    const closed = await call('POST', `${H}/chats/${id}/clear`);
+    assert.equal(closed.status, 400);
+    assert.match(closed.body.error, /closed/);
+  } finally {
+    ws.close();
+  }
+});
+
+test('the task route empties a task chat too; an unknown task is a 404', async () => {
+  const created = await call('POST', '/api/projects/hfs/tasks/12/chats', {});
+  const res = await call('POST', `/api/projects/hfs/tasks/12/chats/${created.body.id}/clear`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { cleared: true, messages: 0 });
+  assert.equal((await call('POST', `/api/projects/hfs/tasks/999/chats/${created.body.id}/clear`)).status, 404);
+});
+
+test('GET commands: with no worktree the board\'s own, `complete: false`, and nothing is built', async () => {
+  const summary = (await call('GET', H)).body;
+  const got = await call('GET', `${H}/chats/${summary.chats[0].id}/commands`);
+  assert.equal(got.status, 200);
+  assert.equal(got.body.complete, false);
+  assert.deepEqual(got.body.commands.map((c) => [c.name, c.source]), [['clear', 'board'], ['model', 'board'], ['plan', 'board'], ['help', 'board']]);
+  assert.deepEqual(Object.keys(got.body.commands[0]).sort(), ['aliases', 'argumentHint', 'description', 'name', 'source']);
+  assert.equal((await call('GET', H)).body.worktreePath ?? null, null, 'asking built no worktree');
+
+  const task = await call('POST', '/api/projects/hfs/tasks/12/chats', {});
+  const forTask = await call('GET', `/api/projects/hfs/tasks/12/chats/${task.body.id}/commands`);
+  assert.equal(forTask.status, 200);
+  assert.equal(forTask.body.complete, false);
+  assert.equal((await call('GET', `${H}/chats/nope/commands`)).status, 400);
+});

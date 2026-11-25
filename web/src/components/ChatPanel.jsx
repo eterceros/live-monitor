@@ -31,6 +31,8 @@ import { readDrafts, saveDraft } from '../storage.js';
 import { useStrings } from '../i18n/useStrings.js';
 import { fill, plural, splitAround } from '../i18n/index.js';
 import { TaskPlanBubble, PendingBubble, MessageBubble, ThinkingBubble, DayDivider } from './chat/ChatBubbles.jsx';
+import CommandMenu from './chat/CommandMenu.jsx';
+import { commandQuery, filterCommands, commandText, isClearCommand } from '../chatCommands.js';
 import { ChatPathsContext } from '../viewer/context.js';
 import { collectPaths, fallbackFor, signatureOf } from '../viewer/chatPaths.js';
 import './planBubble.css';
@@ -177,6 +179,27 @@ export default function ChatPanel({
       options: [{ value: true, label: t.common.delete, tone: 'danger' }], cancel: t.chat.panel.keep,
     });
     if (go) api.deleteChat(task, c.id).catch(say);
+  };
+  // «Vaciar» and a typed `/clear`: the same question, then the server empties
+  // the messages and lets the session go. A task's Main also loses the session
+  // the board's phases resume, and the question says so.
+  const isTaskMain = (c) => !isProject && all[0]?.id === c?.id;
+  const emptyChat = async (c) => {
+    if (!c) return false;
+    if (c.busy) { say(t.chat.panel.clearChatBusy); return false; }
+    const go = await ask({
+      title: fill(t.chat.panel.clearChatTitle, { title: c.title }), icon: 'trash',
+      text: [plural(c.messageCount ?? 0, t.chat.panel.clearChatText), isTaskMain(c) ? t.chat.panel.clearChatMain : null].filter(Boolean).join(' '),
+      options: [{ value: true, label: t.chat.panel.clearChat, tone: 'danger' }], cancel: t.chat.panel.keep, focus: 'cancel',
+    });
+    if (!go) return false;
+    try {
+      await api.clearChat(task, c.id);
+      return true;
+    } catch (e) {
+      say(e);
+      return false;
+    }
   };
   // Rename a conversation: double-click its name, Enter or leaving the box
   // saves, Esc cancels. Blur follows Enter and Esc, so `renameRef` says once.
@@ -343,6 +366,46 @@ export default function ChatPanel({
   const promptHint = t.chat.panel.placeholderPrompt;
   const promptId = useId();
 
+  // The slash-command menu. It follows the box while the box holds `/` and a
+  // name being typed, or opens from its button; Esc puts it away until the
+  // text changes. The list is the server's, per chat, asked again on every
+  // opening (a skill may have appeared) and shown from the last answer meanwhile.
+  const menuId = useId();
+  const [menuForced, setMenuForced] = useState(false);
+  const [menuDismissed, setMenuDismissed] = useState(null);   // the text Esc was pressed on
+  const [menuActive, setMenuActive] = useState(0);
+  const cmdCache = useRef(new Map());   // chat id -> { commands, complete }
+  const [cmds, setCmds] = useState({ list: [], complete: true, loading: false });
+  const typedQuery = commandQuery(text);
+  // `ready` is declared further down; this is the same test.
+  const menuOpen = Boolean(chat && (isProject || task.hasWorktree) && (menuForced || (typedQuery !== null && menuDismissed !== text)));
+  const menuItems = menuOpen ? filterCommands(cmds.list, typedQuery ?? '') : [];
+  const openMenu = () => { setMenuDismissed(null); setMenuForced(true); };
+  const closeMenu = () => { setMenuForced(false); setMenuDismissed(text); };
+  const pickCommand = (row) => {
+    if (!row) return;
+    setText((cur) => commandText(row, cur));
+    setMenuForced(false);
+    composer.textareaRef.current?.focus();
+  };
+  useEffect(() => { setMenuActive(0); }, [typedQuery, menuOpen]);
+  useEffect(() => { setMenuForced(false); setMenuDismissed(null); }, [chat?.id]);
+  useEffect(() => {
+    if (!menuOpen || !chat) return undefined;
+    let live = true;
+    const id = chat.id;
+    const cached = cmdCache.current.get(id);
+    setCmds({ list: cached?.commands ?? [], complete: cached?.complete ?? true, loading: !cached });
+    api.chatCommands(task, id)
+      .then((r) => {
+        const got = { commands: r.commands ?? [], complete: r.complete !== false };
+        cmdCache.current.set(id, got);
+        if (live) setCmds({ list: got.commands, complete: got.complete, loading: false });
+      })
+      .catch(() => { if (live) setCmds((c) => ({ ...c, loading: false, complete: false })); });
+    return () => { live = false; };
+  }, [menuOpen, chat?.id]);
+
   // La voz escribe en la pestaña que estaba activa al empezar; si cambias,
   // dejaría de caer donde miras. Se aborta, no se para: `onText` es el
   // `setText` de la pestaña anterior, y una parada educada aún entrega un
@@ -372,13 +435,19 @@ export default function ChatPanel({
     const onUpdate = (ev) => {
       if (mine(ev)) setMessages((prev) => applyUpdate(prev, ev.detail));
     };
+    // Emptied (`/clear`, «Vaciar»), here or on another device.
+    const onReset = (ev) => {
+      if (mine(ev)) setMessages([]);
+    };
     window.addEventListener('task-chat', onChat);
     window.addEventListener('task-chat-update', onUpdate);
+    window.addEventListener('task-chat-reset', onReset);
     window.addEventListener('board-connected', load);
     return () => {
       vigente = false;
       window.removeEventListener('task-chat', onChat);
       window.removeEventListener('task-chat-update', onUpdate);
+      window.removeEventListener('task-chat-reset', onReset);
       window.removeEventListener('board-connected', load);
     };
   }, [task.project, task.issue, task.machine, chat?.id]);
@@ -437,6 +506,11 @@ export default function ChatPanel({
     if ((!body && !files.length) || !ready || sending || !chat) return;
     // Sent from a tap or a key: the moment a phone lets the page speak (see primeSpeech).
     if (voiceOn && voiceSupported) primeSpeech();
+    // `/clear` is not a message: it asks, and the server empties the chat.
+    if (isClearCommand(body) && !files.length) {
+      if (await emptyChat(chat)) setText('');
+      return;
+    }
     // A typed `/model <name>` is answered by the server, but the cache warning
     // belongs here: resolve the name as the server does and ask only when it
     // lands on a different model. An unresolvable name goes through as typed.
@@ -550,6 +624,16 @@ export default function ChatPanel({
               onClick={() => setCreating(true)}
             ><Icon name="pin" /> {t.chat.panel.createTask}</button>
           )}
+          <button
+            type="button"
+            className="btn btn-icon btn-sm cp-clear-chat"
+            aria-label={t.chat.panel.clearChat}
+            title={chat?.busy ? t.chat.panel.clearChatBusy : t.chat.panel.clearChatHint}
+            disabled={!chat || chat.busy || !chat.messageCount}
+            onClick={() => emptyChat(chat)}
+          >
+            <Icon name="trash" />
+          </button>
           <button
             type="button"
             className="btn btn-icon btn-sm cp-history-btn"
@@ -877,12 +961,29 @@ export default function ChatPanel({
             />
           )}
           <label htmlFor={promptId} className="cp-sr">{fill(t.chat.panel.promptLabel, { chat: chat?.title ?? t.chat.panel.promptChatFallback, owner: ownerLabel })}</label>
+          {menuOpen && (
+            <CommandMenu
+              id={menuId}
+              items={menuItems}
+              active={Math.min(menuActive, Math.max(0, menuItems.length - 1))}
+              loading={cmds.loading}
+              complete={cmds.complete}
+              onHover={setMenuActive}
+              onPick={pickCommand}
+            />
+          )}
           <textarea
             id={promptId}
             className="cp-input"
             ref={composer.textareaRef}
             value={text}
             disabled={!ready}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-haspopup="listbox"
+            aria-expanded={menuOpen}
+            aria-controls={menuOpen ? menuId : undefined}
+            aria-activedescendant={menuOpen && menuItems.length ? `${menuId}-${Math.min(menuActive, menuItems.length - 1)}` : undefined}
             placeholder={!ready
               ? t.chat.panel.placeholderNoWorktree
               : dictation.listening
@@ -918,6 +1019,21 @@ export default function ChatPanel({
                 handsFree.end();
                 dictation.abort();
               }
+              // The command menu, while it is open, has the arrows, Enter, Tab and Esc.
+              if (menuOpen && !e.nativeEvent.isComposing) {
+                if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMenu(); return; } // i18n-ok: KeyboardEvent.key
+                if (menuItems.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { // i18n-ok: KeyboardEvent.key
+                  e.preventDefault();
+                  const step = e.key === 'ArrowDown' ? 1 : -1; // i18n-ok: KeyboardEvent.key
+                  setMenuActive((i) => (i + step + menuItems.length) % menuItems.length);
+                  return;
+                }
+                if (menuItems.length && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) { // i18n-ok: KeyboardEvent.key
+                  e.preventDefault();
+                  pickCommand(menuItems[Math.min(menuActive, menuItems.length - 1)]);
+                  return;
+                }
+              }
               if (e.key !== 'Enter') return; // i18n-ok: KeyboardEvent.key
               // Dictation and an IME confirm their candidate with Enter: that
               // one is not a send, it is the text landing in the box.
@@ -942,6 +1058,12 @@ export default function ChatPanel({
           <div className="cp-tools">
             <button type="button" className="btn btn-icon btn-sm cp-tool" disabled={!ready} title={t.chat.panel.attach} aria-label={t.chat.panel.attach}
               onClick={() => fileInput.current?.click()}><Icon name="paperclip" /></button>
+            {/* Keeps the focus in the box (mousedown): the keys of the menu are the box's. */}
+            <button type="button" className={`btn btn-icon btn-sm cp-tool cp-cmd-btn${menuOpen ? ' is-on' : ''}`} disabled={!ready}
+              title={t.chat.panel.commandsTitle} aria-label={t.chat.panel.commands}
+              aria-haspopup="listbox" aria-expanded={menuOpen}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { if (menuOpen) closeMenu(); else openMenu(); composer.textareaRef.current?.focus(); }}><Icon name="slash" /></button>
             <input ref={fileInput} type="file" multiple hidden
               onChange={(e) => { addFiles([...e.target.files]); e.target.value = ''; }} />
             <MicButton
