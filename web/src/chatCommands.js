@@ -39,6 +39,17 @@ export function commandText(row, text = '') {
   return `/${row.name} ${s.replace(/^\s+/, '')}`;
 }
 
+/**
+ * Whether the box already holds exactly this row's command (or one of its aliases)
+ * and nothing else. Then Enter has nothing left to complete: it sends, as it does
+ * with the menu closed. Tab still completes, and a half-typed name still picks.
+ */
+export function typedInFull(row, text) {
+  const s = String(text ?? '').trim().toLowerCase();
+  if (!row || !COMMAND_DRAFT.test(s)) return false;
+  return [row.name, ...(row.aliases ?? [])].some((n) => `/${String(n).toLowerCase()}` === s);
+}
+
 /** `/clear` and its aliases, typed alone: the panel empties the chat itself, after asking. */
 export const isClearCommand = (text) => /^\/(clear|reset|new)\s*$/i.test(String(text ?? '').trim());
 

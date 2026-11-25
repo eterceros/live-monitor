@@ -38,6 +38,7 @@ test('ChatPanel: the menu has the keys before Enter sends, and a «/» button af
   const keys = panel.slice(panel.indexOf('// The command menu, while it is open'), panel.indexOf("if (e.key !== 'Enter') return;"));
   for (const k of ['Escape', 'ArrowDown', 'ArrowUp', 'Tab', 'Enter']) assert.match(keys, new RegExp(`'${k}'`), k);
   assert.match(keys, /pickCommand\(/);
+  assert.match(keys, /typedInFull\(row, text\)/, 'Enter sends a command that is already typed in full');
   assert.match(keys, /closeMenu\(\)/);
   const clip = panel.indexOf('<Icon name="paperclip" /></button>');
   const slash = panel.indexOf('<Icon name="slash" /></button>');
