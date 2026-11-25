@@ -32,7 +32,7 @@ import { useStrings } from '../i18n/useStrings.js';
 import { fill, plural, splitAround } from '../i18n/index.js';
 import { TaskPlanBubble, PendingBubble, MessageBubble, ThinkingBubble, DayDivider } from './chat/ChatBubbles.jsx';
 import CommandMenu from './chat/CommandMenu.jsx';
-import { commandQuery, filterCommands, commandText, isClearCommand } from '../chatCommands.js';
+import { commandQuery, filterCommands, commandText, isClearCommand, typedInFull } from '../chatCommands.js';
 import { ChatPathsContext } from '../viewer/context.js';
 import { collectPaths, fallbackFor, signatureOf } from '../viewer/chatPaths.js';
 import './planBubble.css';
@@ -1029,9 +1029,13 @@ export default function ChatPanel({
                   return;
                 }
                 if (menuItems.length && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) { // i18n-ok: KeyboardEvent.key
-                  e.preventDefault();
-                  pickCommand(menuItems[Math.min(menuActive, menuItems.length - 1)]);
-                  return;
+                  const row = menuItems[Math.min(menuActive, menuItems.length - 1)];
+                  // The whole command is already typed: Enter sends it (falls through), it does not complete it again.
+                  if (!(e.key === 'Enter' && typedInFull(row, text))) { // i18n-ok: KeyboardEvent.key
+                    e.preventDefault();
+                    pickCommand(row);
+                    return;
+                  }
                 }
               }
               if (e.key !== 'Enter') return; // i18n-ok: KeyboardEvent.key

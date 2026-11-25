@@ -7,7 +7,7 @@ import {
   parseCommand, boardCommand, isDenied, resolveCommand, mergeCommandList, helpText, BOARD_COMMANDS,
 } from '../src/chatcommands.js';
 import {
-  commandQuery, filterCommands, commandText, isClearCommand, shortDescription,
+  commandQuery, filterCommands, commandText, isClearCommand, shortDescription, typedInFull,
 } from '../../web/src/chatCommands.js';
 
 const SDK = [
@@ -106,4 +106,17 @@ test('web: picking writes the command and a space; other text stays as its argum
   assert.ok(!isClearCommand('/clear now') && !isClearCommand('/clearx') && !isClearCommand('clear'));
   assert.equal(shortDescription('a  b\nc'), 'a b c');
   assert.equal(shortDescription('x'.repeat(100), 10), `${'x'.repeat(9)}…`);
+});
+
+test('typedInFull: Enter sends a command that is already typed, and completes one that is not', () => {
+  const clear = { name: 'clear', aliases: ['reset', 'new'], source: 'board' };
+  const compact = { name: 'compact', source: 'claude' };
+  assert.equal(typedInFull(clear, '/clear'), true);
+  assert.equal(typedInFull(clear, '  /CLEAR '), true, 'case and surrounding space do not matter');
+  assert.equal(typedInFull(clear, '/reset'), true, 'an alias counts');
+  assert.equal(typedInFull(clear, '/cle'), false, 'half a name still gets completed');
+  assert.equal(typedInFull(compact, '/clear'), false, 'only the highlighted row is looked at');
+  assert.equal(typedInFull(clear, '/clear now'), false, 'with arguments the menu is closed anyway');
+  assert.equal(typedInFull(null, '/clear'), false);
+  assert.equal(typedInFull(clear, ''), false);
 });
