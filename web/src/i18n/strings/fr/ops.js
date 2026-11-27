@@ -179,7 +179,7 @@ export default {
     prepareRetry: 'Réessayer',
     prepareTitle: 'Cloner le projet sur {to} et installer ses dépendances',
     prepareFailed: 'échec de la préparation : {message}',
-    prepareStep: { clone: 'Clonage du dépôt', worktrees: 'Création du dossier des worktrees', install: 'Installation des dépendances' },
+    prepareStep: { queued: 'En attente d’une autre préparation sur cette machine', clone: 'Clonage du dépôt', worktrees: 'Création du dossier des worktrees', install: 'Installation des dépendances' },
     discard: 'abandonner les changements locaux de {to}',
     whatWillHappen: 'Ce qui va se passer :',
     worktreeAria: 'Worktree sur {from}',

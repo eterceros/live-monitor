@@ -6,7 +6,7 @@ import path from 'node:path';
 import { tempDir } from './teardown.mjs';
 import { execFileSync } from 'node:child_process';
 
-import { ensureDetachedWorktree, refreshDetachedWorktree } from '../src/worktree.js';
+import { createWorktree, ensureDetachedWorktree, refreshDetachedWorktree } from '../src/worktree.js';
 import { LocalMachine } from '../src/machine.js';
 
 /** Against real git: what `status` and `merge-base` answer is the whole point. */
@@ -151,4 +151,14 @@ test('a stat-only change (mtime touched, content identical) is not dirty', async
   const r = await refreshDetachedWorktree(f.machine, p, 'main');
   assert.equal(r.moved, true, `stat-only must not count as dirty (note: ${r.note})`);
   assert.equal(r.head.sha, sha);
+});
+
+test('without the project checkout neither worktree call makes any directory', async () => {
+  const root = tempDir('hfsmon-nocheckout-');
+  const wtRoot = path.join(root, 'repo-wt');
+  const machine = new LocalMachine('test', { repoPath: path.join(root, 'repo'), worktreeRoot: wtRoot });
+  const missing = (e) => e.code === 'checkout_missing' && e.message.includes(`checkout missing at ${machine.repoPath}`);
+  await assert.rejects(() => ensureDetachedWorktree(machine, 'main', '_proyecto'), missing);
+  await assert.rejects(() => createWorktree(machine, 'feat/1-x'), missing);
+  assert.equal(existsSync(wtRoot), false);
 });

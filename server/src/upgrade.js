@@ -23,6 +23,7 @@ import {
   sdkVersion, expectedClaudeVersion, isNewerVersion, isStrictVersion, pairedCliVersion, versionAtLeast,
 } from './claude.js';
 import { gitBusyReason, movingReason, closeTaskSessions, tick } from './pipeline.js';
+import { checkoutHooks, checkoutsBusy } from './checkout.js';
 
 /**
  * Upgrading the Claude Agent SDK, the CLI and the runner from the board.
@@ -221,6 +222,11 @@ export function upgradeHoldsNewWork() {
   return UNFINISHED.includes(currentJob()?.state);
 }
 
+// `checkout.js` cannot import this module (`pipeline.js` imports it), so the
+// guard is handed to it from here: nothing is cloned or installed while a job
+// is waiting or running.
+checkoutHooks.holdsNewWork = upgradeHoldsNewWork;
+
 /** The runners or the laptop are being replaced right now. */
 export function upgradeRunning() {
   return ['running', 'laptop'].includes(currentJob()?.state);
@@ -384,6 +390,14 @@ export function idleReasons() {
         || (moving && (moving.agents.running || moving.commands || moving.servers));
       if (live) reasons.push({ project: holder.project, issue: null, text: `${where}: «${chat.title}» está en marcha`, machine: holder.machine });
     }
+  }
+  // A clone or a Prepare, running or queued: a restarted runner would cut it.
+  // It may belong to no task (Prepare) and to no live chat turn.
+  for (const job of checkoutsBusy()) {
+    let text = `preparing ${job.repo} on ${job.machine} (${job.step})`;
+    if (job.status === 'queued') text = `${job.repo} is waiting for its checkout on ${job.machine}`;
+    else if (job.step === 'clone') text = `cloning or checking ${job.repo} on ${job.machine}`;
+    reasons.push({ project: job.project, issue: null, text, machine: job.machine });
   }
   return { reasons, warnings };
 }

@@ -401,6 +401,24 @@ export function declaredProject(name, projectId) {
   return { repoPath: `${root}/${folder}`, worktreeRoot: `${root}/${folder}-wt` };
 }
 
+/**
+ * Makes sure a runner's `home` is known before paths under `~` are resolved:
+ * it is only learned from `/info`, so a board that just started has none.
+ * The local machine, an unknown name and a known home are left alone.
+ *
+ * @param {string} name a machine in `config.machines`.
+ * @throws {Error} code `runner_unreachable` when the runner does not answer.
+ */
+export async function ensureHome(name) {
+  const base = machines()[name];
+  if (!base || base.kind === 'local' || base.home) return;
+  try {
+    await base.info();
+  } catch (e) {
+    throw Object.assign(new Error(`Runner "${name}" is unreachable: ${e.message}`), { code: 'runner_unreachable', cause: e });
+  }
+}
+
 /** Can this machine hold a task of this project? Local always; a runner only if it declares it. */
 export function machineHostsProject(name, projectId) {
   if (projectId === DEFAULT_PROJECT_ID) return true;

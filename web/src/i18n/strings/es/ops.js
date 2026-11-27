@@ -181,7 +181,7 @@ export default {
     prepareRetry: 'Reintentar',
     prepareTitle: 'Clonar el proyecto en {to} e instalar sus dependencias',
     prepareFailed: 'no se pudo preparar: {message}',
-    prepareStep: { clone: 'Clonando el repositorio', worktrees: 'Creando la carpeta de worktrees', install: 'Instalando dependencias' },
+    prepareStep: { queued: 'Esperando a otra preparación en esta máquina', clone: 'Clonando el repositorio', worktrees: 'Creando la carpeta de worktrees', install: 'Instalando dependencias' },
     discard: 'descartar los cambios locales de {to}',
     whatWillHappen: 'Qué pasará:',
     worktreeAria: 'Worktree en {from}',

@@ -16,6 +16,7 @@ import {
   foreignWorktreeFor, dirSize,
 } from './worktree.js';
 import { baseBranchOf } from './projects.js';
+import { checkoutReadiness, projectRepo } from './checkout.js';
 import {
   assertMachineReady, gitBusyReason, closeTaskSessions, closeLiveSession, continuationContext,
   refreshBranchStatus, withInfraRetries, gitMutex, markRunning, tick, assertNotMoving,
@@ -79,13 +80,15 @@ function cachedHome(machine) {
  * the SDK's, which an in-process runner answers with whatever the host has;
  * `homeOf` decides where transcripts are looked for, so a test never writes
  * into the user's real `~/.claude/projects`; `probeMs` is how long a remote
- * probe may take before the target counts as unreachable.
+ * probe may take before the target counts as unreachable; `checkoutReadiness`
+ * wants a GitHub origin, which a test's local one is not.
  */
 export const moveHooks = {
   runClaude: (options) => runClaude(options),
   assertMachineReady: (machine) => assertMachineReady(machine),
   homeOf: (machine) => cachedHome(machine),
   probeMs: PROBE_MS,
+  checkoutReadiness: (machine, options) => checkoutReadiness(machine, options),
 };
 
 const httpError = (status, message, extra = {}) => Object.assign(new Error(message), { status, ...extra });
@@ -330,6 +333,24 @@ function cachedFetch(machine, cwd, branch) {
   return promise;
 }
 
+const readinessCache = new Map();   // machine, checkout, repo, base -> { at, promise }
+
+/**
+ * The checkout check fetches, so while the dialog polls a "ready" is trusted
+ * as long as a branch fetch is. Anything else is asked again, so a checkout
+ * somebody just fixed shows at once; so is a `fresh` one, right before a move.
+ */
+function targetReadiness(machine, options, fresh) {
+  const key = [machine.name, machine.repoPath, options.repo, options.baseBranch].join('\0');
+  const hit = readinessCache.get(key);
+  if (!fresh && hit && Date.now() - hit.at < FETCH_TTL_MS) return hit.promise;
+  const promise = Promise.resolve().then(() => moveHooks.checkoutReadiness(machine, options));
+  readinessCache.set(key, { at: Date.now(), promise });
+  const forget = () => { if (readinessCache.get(key)?.promise === promise) readinessCache.delete(key); };
+  promise.then((state) => { if (!state.ready) forget(); }, forget);
+  return promise;
+}
+
 const sizeCache = new Map();    // `${machine}\0${path}` -> { at, promise }
 
 /**
@@ -425,15 +446,25 @@ async function inspectTarget(task, to, { fetchFn = cachedFetch, fresh = false } 
     return out;
   }
 
-  // A runner only holds the projects somebody put there: the checkout must exist
-  // before a worktree can be cut from it. (Local checkouts come from the registry.)
+  // A runner only holds the projects somebody put there: the checkout must be
+  // usable before a worktree can be cut from it. (Local checkouts come from the registry.)
   if (machine.kind === 'runner' && machine.repoPath) {
     try {
-      const has = await probe(machine.fs.exists(machine.path.join(machine.repoPath, '.git')), 'looking for the project checkout');
-      if (!has) { out.noCheckout = machine.repoPath; return out; }
+      if (!await probe(machine.fs.exists(machine.repoPath), 'looking for the project checkout')) {
+        out.noCheckout = machine.repoPath;
+        return out;
+      }
+      // Not on the probe's leash, for the same reason as the branch fetch below:
+      // this fetches, and its git calls have their own time limits.
+      const state = await targetReadiness(machine, { repo: projectRepo(task.project), baseBranch: baseBranchOf(task.project) }, fresh);
+      if (!state.ready) {
+        if (state.code === 'missing') out.noCheckout = machine.repoPath;
+        else out.notReady = state.reason;
+        return out;
+      }
     } catch (e) {
       out.error = e.message;
-      out.unreachable = /sin respuesta|no response/.test(e.message);
+      out.unreachable = e.code === 'RUNNER_OFFLINE' || /sin respuesta|no response/.test(e.message);
       return out;
     }
   }
@@ -533,7 +564,11 @@ function blockersFrom(task, to, source, target, { discardTargetLocal = false, re
   }
   if (target.noCheckout) {
     add('project_not_prepared',
-      `The project "${task.project}" is not on ${to} yet: nothing at ${target.noCheckout}. Clone it there and install its dependencies (remote/bootstrap.sh project <id> <git-url>)`);
+      `The project "${task.project}" is not on ${to} yet: nothing at ${target.noCheckout}. Use Prepare to clone it there and install its dependencies`);
+    return blockers;
+  }
+  if (target.notReady) {
+    add('checkout_not_ready', `The checkout of "${task.project}" on ${to} is not ready: ${target.notReady}`);
     return blockers;
   }
   if (target.error) {

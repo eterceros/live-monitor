@@ -4,7 +4,8 @@ import { config, DATA_DIR } from './config.js';
 import { store } from './store.js';
 import { settings } from './settings.js';
 import { Mutex, Semaphore } from './exec.js';
-import { machineOf, machineFor, machineViewFor, machines, requireProject } from './machine.js';
+import { machineOf, machineFor, machineViewFor, machines, requireProject, ensureHome } from './machine.js';
+import { ensureCheckout } from './checkout.js';
 import {
   runClaude, parseTriageResult, parseTaggedJson, stripTaggedLine, expectedClaudeVersion,
   sdkVersion, latestSdkVersion, isNewerVersion, versionAtLeast,
@@ -1274,6 +1275,8 @@ export async function ensureWorktree(issue) {
   const task = store.get(issue);
   if (!task) throw new Error(`Unknown task #${issue}`);
   assertNotMoving(task);
+  // A board that just started does not know a runner's home, and paths need it.
+  await ensureHome(task.machine ?? 'local');
   if (await isProjectWorktree(machineOf(task), task.worktreePath)) return task.worktreePath;
   await assertMachineReady(machineOf(task));
   if (task.worktreePath) {
@@ -1288,6 +1291,11 @@ export async function ensureWorktree(issue) {
   task.errorInfo = null;
   store.setState(task, 'worktree');
   try {
+    // On a runner without the project, it is cloned first (nothing on the board's machine).
+    const { warnings } = await ensureCheckout(task.machine ?? 'local', task.project, {
+      onLine: (l) => store.addLog(task, 'worktree', l),
+    });
+    for (const warning of warnings) store.addLog(task, 'worktree', warning);
     let branch = task.branch;
     let adopt = Boolean(branch);
     if (!branch) {
@@ -8196,7 +8204,22 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
  */
 async function prepareHolderTurn(holder, chat) {
   const created = !holder.worktreePath;
-  await chatOwnerHooks.ensure(holder);
+  const before = chat.activity;
+  await chatOwnerHooks.ensure(holder, {
+    onLine: (line) => {
+      // The checkout step's own line (git says «Cloning into», capitalised).
+      if (/^cloning \S+ into /.test(line)) chat.activity = `cloning ${repoOf(holder) || holder.project} on ${holder.machine}…`;
+      store.addLog(holder, 'chat', line);
+    },
+    onWarning: (warning) => {
+      store.addLog(holder, 'chat', warning);
+      store.addChat(holder, chat.id, 'assistant', warning);
+    },
+  });
+  if (chat.activity !== before) {
+    chat.activity = before;
+    store.touch(holder);
+  }
   if (created || chat.sessionId) return;
   // Working, or holding something in the background (a build, a dev server, a
   // subagent): moving the checkout under either breaks it.

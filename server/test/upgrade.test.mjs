@@ -85,6 +85,8 @@ script('systemctl', [
   'exit 0',
 ].join('\n'));
 script('npm', 'echo "npm $*" >> "$FAKE_DIR/calls.log"');
+// The checkout step asks `gh` about push access: never the real one.
+script('gh', 'exit 1');
 
 function findShellDir() {
   if (spawnSync('sh', ['-c', 'timeout 1 true'], { stdio: 'ignore' }).status === 0) return null;
@@ -251,6 +253,8 @@ before(async () => {
       };
       // A runner from before U3 (2ed2c6c): no commit, no diskCommit, no monitorDir.
       writeFileSync(path.join(FAKE_DIR, 'box-pid'), String(box.pid));
+      // Never the unit this test process itself runs under (a suite run from a runner).
+      delete out.unit;
       if (box.unit !== undefined) out.unit = box.unit;
       if (box.legacy) {
         delete out.commit;
@@ -655,6 +659,48 @@ test('login: idleReasons marca la máquina de cada motivo; una mudanza cuenta en
   assert.deepEqual(moving.machines, ['local', 'box']);
   assert.deepEqual(warnings, []);
   dropTasks();
+});
+
+test('idleReasons: a clone running or queued on a machine is a reason; a waiting upgrade refuses new work', async () => {
+  dropTasks();
+  await noJob();
+  const { checkoutHooks, ensureCheckout, resetCheckouts } = await import('../src/checkout.js');
+  assert.equal(checkoutHooks.holdsNewWork, upgrade.upgradeHoldsNewWork, 'upgrade.js hands over its guard');
+  const savedReadiness = checkoutHooks.readiness;
+  let release;
+  const hold = new Promise((r) => { release = r; });
+  // The box's checkout is there already: only its check is held, and nothing is cloned.
+  checkoutHooks.readiness = async () => { await hold; return { ready: true }; };
+  try {
+    resetCheckouts();
+    const job = ensureCheckout('box', 'hfs');
+    let { reasons } = upgrade.idleReasons();
+    assert.equal(reasons.length, 1, JSON.stringify(reasons));
+    assert.equal(reasons[0].machine, 'box');
+    assert.equal(reasons[0].project, 'hfs');
+    assert.equal(reasons[0].issue, null);
+    assert.match(reasons[0].text, /waiting for its checkout on box/);
+    await waitFor(() => /cloning or checking .+ on box/.test(upgrade.idleReasons().reasons[0]?.text), 'the job starts');
+    release();
+    await job;
+    ({ reasons } = upgrade.idleReasons());
+    assert.deepEqual(reasons, [], 'a finished job holds nothing');
+
+    holdBoard();
+    await upgrade.requestUpgrade({ target: LATEST });
+    let installed = false;
+    await assert.rejects(
+      () => ensureCheckout('box', 'hfs', { install: async () => { installed = true; } }),
+      /The board is updating/,
+    );
+    assert.equal(installed, false);
+    upgrade.cancelUpgrade();
+  } finally {
+    release();
+    checkoutHooks.readiness = savedReadiness;
+    resetCheckouts();
+    dropTasks();
+  }
 });
 
 test('login: bundledCliPath se exporta y apunta al binario del SDK (o a null)', () => {
