@@ -29,6 +29,7 @@ function fakeBox() {
   const box = {
     kind: 'runner', name: 'devbox', home: null, repoPath: '/x', worktreeRoot: '/y', path: path.posix,
     events: [], dirs: new Set(), worktrees: new Set(), cloneError: null, push: 'true',
+    cloneGate: null, headGate: null, headHeld: false,
     samePath: (a, b) => a === b,
     info: async () => { box.home = '/home/zoe'; return { home: '/home/zoe', claude: expectedClaudeVersion() ?? '999.0.0' }; },
     fs: {
@@ -40,6 +41,7 @@ function fakeBox() {
       if (file === 'gh' && args[0] === 'api') return yes(`${box.push}\n`);
       if (file === 'gh') {
         box.events.push('clone');
+        if (box.cloneGate) await box.cloneGate;
         if (box.cloneError) return no(box.cloneError);
         box.dirs.add(args[3]);
         return yes();
@@ -51,6 +53,10 @@ function fakeBox() {
       }
       const cmd = args.filter((a) => !a.startsWith('--no-optional'));
       const [verb, ...rest] = cmd[0] === '-C' ? cmd.slice(2) : cmd;
+      if (verb === 'rev-parse' && rest.join() === 'HEAD' && box.headGate) {
+        box.headHeld = true;
+        await box.headGate;
+      }
       if (verb === 'remote' && rest[0] === 'get-url') return yes('https://github.com/o/ehr.git\n');
       if (verb === 'rev-parse' && rest.includes('--git-common-dir')) return box.worktrees.has(opts.cwd) ? yes(`${REPO}/.git\n`) : no();
       if (verb === 'worktree' && rest[0] === 'add') {
@@ -175,4 +181,140 @@ test('the first chat message on a runner clones the project and is answered; a f
   pipeline.sendChat(key, chat.id, 'tercera');
   await until(() => !chat.busy && sent.length === 2);
   assert.equal(box.events.filter((e) => e === 'clone').length, clones);
+});
+
+function gate() {
+  let open;
+  const promise = new Promise((resolve) => { open = resolve; });
+  return { promise, open };
+}
+const settle = () => new Promise((r) => setTimeout(r, 100));
+const times = (text, part) => text.split(part).length - 1;
+
+async function runnerChat() {
+  await box.info();
+  const holder = projectchats.getHolder('ehr', 'devbox');
+  // The holder outlives a test: this one starts without a worktree again.
+  holder.worktreePath = null;
+  const chat = chats.addChatTo(holder, {});
+  return { holder, chat, key: projectchats.holderKey('ehr', 'devbox') };
+}
+
+const said = (chat, re) => chat.messages.filter((m) => m.role === 'assistant' && re.test(m.text ?? ''));
+
+test('Stop during a clone: nothing is sent, and what was typed meanwhile goes once with the next message', async () => {
+  const { holder, chat, key } = await runnerChat();
+  const clone = gate();
+  box.cloneGate = clone.promise;
+  pipeline.sendChat(key, chat.id, 'mensaje-detenido');
+  await until(() => box.events.includes('clone'));
+  pipeline.sendChat(key, chat.id, 'nota-pendiente');
+
+  await pipeline.interruptChat(key, chat.id);
+  assert.equal(chat.busy, false);
+  assert.equal(chat.activity, null);
+  assert.equal(said(chat, /message was not sent.*goes on in the background.*next message/).length, 1);
+
+  clone.open();
+  await until(() => holder.worktreePath);   // the shared clone is not cancelled
+  await settle();
+  assert.equal(sent.length, 0);
+  assert.equal(chat.busy, false);
+  assert.equal(chat.activity, null);
+  assert.equal(chat.notes.length, 1);
+
+  pipeline.sendChat(key, chat.id, 'siguiente');
+  await until(() => !chat.busy && sent.length === 1);
+  await settle();
+  assert.equal(sent.length, 1);
+  assert.equal(times(sent[0].prompt, 'nota-pendiente'), 1);
+  assert.equal(times(sent[0].prompt, 'siguiente'), 1);
+  assert.equal(times(sent[0].prompt, 'mensaje-detenido'), 0);
+  assert.equal(chat.notes.length, 0);
+});
+
+test('a message sent after Stop, with the clone still running, joins it and is the only one sent', async () => {
+  const { chat, key } = await runnerChat();
+  const clone = gate();
+  box.cloneGate = clone.promise;
+  pipeline.sendChat(key, chat.id, 'mensaje-detenido');
+  await until(() => box.events.includes('clone'));
+  await pipeline.interruptChat(key, chat.id);
+  pipeline.sendChat(key, chat.id, 'reenvio');
+  assert.equal(chat.busy, true);
+
+  clone.open();
+  await until(() => !chat.busy && sent.length === 1);
+  await settle();
+  assert.equal(sent.length, 1);
+  assert.equal(times(sent[0].prompt, 'reenvio'), 1);
+  assert.equal(times(sent[0].prompt, 'mensaje-detenido'), 0);
+  assert.equal(box.events.filter((e) => e === 'clone').length, 1);
+});
+
+test('a clone that fails after Stop says nothing in the chat and retries nothing', async () => {
+  const { holder, chat, key } = await runnerChat();
+  const clone = gate();
+  box.cloneGate = clone.promise;
+  box.cloneError = 'network is down';
+  pipeline.sendChat(key, chat.id, 'mensaje-detenido');
+  await until(() => box.events.includes('clone'));
+  pipeline.sendChat(key, chat.id, 'nota-pendiente');
+  await pipeline.interruptChat(key, chat.id);
+
+  clone.open();
+  await until(() => logOf(holder, 'chat').some((l) => /stopped turn .*network is down/.test(l)));
+  await settle();
+  assert.equal(said(chat, /Could not prepare/).length, 0);
+  assert.equal(box.events.filter((e) => e === 'clone').length, 1);
+  assert.equal(sent.length, 0);
+  assert.equal(chat.busy, false);
+  assert.equal(chat.notes.length, 1);
+});
+
+test('Stop after the notes were taken for the prompt, just before the send: they are put back', async () => {
+  const { chat, key } = await runnerChat();
+  const clone = gate();
+  box.cloneGate = clone.promise;
+  pipeline.sendChat(key, chat.id, 'primero');
+  await until(() => box.events.includes('clone'));
+  pipeline.sendChat(key, chat.id, 'nota-pendiente');
+  await pipeline.interruptChat(key, chat.id);
+  clone.open();
+  await settle();
+
+  // A conversation with a session already: no refresh runs, so the first read
+  // of HEAD is the one right before the send.
+  chat.sessionId = 'sess-previa';
+  const head = gate();
+  box.headGate = head.promise;
+  pipeline.sendChat(key, chat.id, 'mensaje-detenido');
+  await until(() => box.headHeld);
+  assert.equal(chat.notes.length, 0, 'the turn has taken the note');
+  await pipeline.interruptChat(key, chat.id);
+  assert.equal(chat.notes.length, 1);
+  box.headGate = null;
+  head.open();
+  await settle();
+  assert.equal(sent.length, 0);
+  assert.equal(chat.busy, false);
+
+  pipeline.sendChat(key, chat.id, 'siguiente');
+  await until(() => !chat.busy && sent.length === 1);
+  await settle();
+  assert.equal(sent.length, 1);
+  assert.equal(times(sent[0].prompt, 'nota-pendiente'), 1);
+  assert.equal(times(sent[0].prompt, 'mensaje-detenido'), 0);
+});
+
+test('the shared worktree is refreshed once at a time: a second call joins the one in flight', async () => {
+  const { holder, chat, key } = await runnerChat();
+  pipeline.sendChat(key, chat.id, 'hola');
+  await until(() => !chat.busy && sent.length === 1);
+  const [first, second] = await Promise.all([
+    projectchats.refreshHolderWorktree(holder),
+    projectchats.refreshHolderWorktree(holder),
+  ]);
+  assert.equal(second, first);
+  assert.notEqual(await projectchats.refreshHolderWorktree(holder), first);
 });

@@ -78,6 +78,8 @@ let noSplit = false;
 let lens = new WeakMap();
 /** key → in-flight `ensureHolderWorktree`, so two chats starting at once create it once. */
 const ensuring = new Map();
+/** key → in-flight `refreshHolderWorktree`: one move of the shared worktree at a time. */
+const refreshing = new Map();
 
 export const holderKey = (project, machine) => `${project}@${machine}`;
 
@@ -242,6 +244,7 @@ export function _resetProjectChatsForTests() {
   loaded = false;
   holders.clear();
   ensuring.clear();
+  refreshing.clear();
 }
 
 function allowed(project, machine) {
@@ -616,13 +619,23 @@ export async function ensureHolderWorktree(holder, { onLine, onWarning } = {}) {
   return job;
 }
 
-/** Brings the worktree to origin/base when harmless; records what HEAD is. Resolves to `{ moved, note, head }`. */
+/**
+ * Brings the worktree to origin/base when harmless; records what HEAD is.
+ * Resolves to `{ moved, note, head }`. A call made while one runs joins it: a
+ * turn stopped mid-refresh leaves the chat free to ask again.
+ */
 export async function refreshHolderWorktree(holder) {
   if (!holder.worktreePath) return { moved: false, note: null, head: holder.head ?? null };
-  const r = await refreshDetachedWorktree(machineOfHolder(holder), holder.worktreePath, baseBranchOf(holder.project));
-  holder.head = r.head;
-  store.touch(holder);
-  return r;
+  const key = holderKey(holder.project, holder.machine);
+  if (refreshing.has(key)) return refreshing.get(key);
+  const job = (async () => {
+    const r = await refreshDetachedWorktree(machineOfHolder(holder), holder.worktreePath, baseBranchOf(holder.project));
+    holder.head = r.head;
+    store.touch(holder);
+    return r;
+  })().finally(() => refreshing.delete(key));
+  refreshing.set(key, job);
+  return job;
 }
 
 // The store dispatches on `kind === 'project'` through these.

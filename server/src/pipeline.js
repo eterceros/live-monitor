@@ -5,7 +5,7 @@ import { store } from './store.js';
 import { settings } from './settings.js';
 import { Mutex, Semaphore } from './exec.js';
 import { machineOf, machineFor, machineViewFor, machines, requireProject, ensureHome } from './machine.js';
-import { ensureCheckout } from './checkout.js';
+import { ensureCheckout, checkoutsBusy } from './checkout.js';
 import {
   runClaude, parseTriageResult, parseTaggedJson, stripTaggedLine, expectedClaudeVersion,
   sdkVersion, latestSdkVersion, isNewerVersion, versionAtLeast,
@@ -6110,6 +6110,9 @@ const liveKey = (ownerKey, chatId) => `${ownerKey}:${chatId}`;
  * «busy with a live process» test is false, so a second message would start a
  * second concurrent turn. Keyed by `liveKey`, valued by a token so a nested
  * `runTurn` (heal, notes) that re-registers is not undone by the outer one.
+ *
+ * Until its prompt goes out (`token.sent`) a turn is stopped through the token
+ * (`token.stop()`): there is no session turn to interrupt yet.
  */
 const starting = new Map();
 
@@ -7909,7 +7912,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
   const command = opts.command ?? null;
   const holder = isHolder(task);
   const startKey = liveKey(ownerKeyOf(task), chat.id);
-  const startToken = {};
+  const startToken = { sent: false, stopped: false, giveBack: null, stop: null };
   starting.set(startKey, startToken);
   const doneStarting = () => { if (starting.get(startKey) === startToken) starting.delete(startKey); };
   chat.busy = true;
@@ -7917,6 +7920,15 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
   store.touch(task);
   // The busy time of the turn, from here to wherever `busy` is cleared.
   const turnSpan = beginSpan(task, { kind: 'chat', name: 'turn', chatId: chat.id });
+  // Stop before the prompt is out frees the chat at once, so another turn may
+  // own it (and its live session) by the time this one resumes: after every
+  // `await` up to the send, a stopped turn returns without touching either.
+  startToken.stop = () => {
+    startToken.stopped = true;
+    doneStarting();
+    startToken.giveBack?.();
+    endSpan(task, turnSpan, { outcome: 'interrupted' });
+  };
   let turnOutcome = 'ok';
   let turnStats = null;
   let turnCounts = null;
@@ -7925,8 +7937,12 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
   // its `cwd`, and the plans directory hangs off it.
   if (holder) {
     try {
-      await prepareHolderTurn(task, chat);
+      await prepareHolderTurn(task, chat, startToken);
     } catch (e) {
+      if (startToken.stopped) {
+        store.addLog(task, 'chat', `⚠️ the preparation of the stopped turn of «${chat.title}» failed (${reasonOf(e)})`);
+        return;
+      }
       store.addChat(task, chat.id, 'assistant', `⚠️ Could not prepare the project worktree: ${e.message}`);
       chat.busy = false;
       chat.activity = null;
@@ -7938,6 +7954,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       if ((chat.notes ?? []).length && !opts.prepRetried) runTurn(task, chat, '', [], { ...opts, prepRetried: true });
       return;
     }
+    if (startToken.stopped) return;
   }
   // Everything up to the `try` below can throw (a machine gone from the config,
   // the session's constructor, the plan-mode template): the turn must not be
@@ -7954,6 +7971,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       live.plansBefore = (await machineOf(task).fs.readdir(dir).catch(() => [])).map((n) => (typeof n === 'string' ? n : n.name));
     }
   } catch (e) {
+    if (startToken.stopped) return;
     if (live) live.ownTurn = false;
     store.addChat(task, chat.id, 'assistant', `⚠️ Could not open the session: ${e.message}`);
     chat.busy = false;
@@ -7963,6 +7981,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
     store.touch(task);
     return;
   }
+  if (startToken.stopped) return;
   let headBefore = null;
   let turnVoice = opts.voice === true;   // the browser is reading this chat aloud
   let heal = null;   // what to send again, on a fresh session, when this one was gone
@@ -7970,7 +7989,9 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
     // Never build a worktree as a side effect of typing: it is a 17k-file
     // checkout, and a question *about* the worktree would silently recreate
     // one the user had just deleted. Creating it is its own explicit action.
-    if (!holder && !(await isProjectWorktree(machineOf(task), task.worktreePath))) {
+    const noWorktree = !holder && !(await isProjectWorktree(machineOf(task), task.worktreePath));
+    if (startToken.stopped) return;
+    if (noWorktree) {
       store.addChat(task, chat.id, 'assistant',
         'This task has no worktree, so there is no session to run the prompt in. '
         + 'Press «🌳 Create worktree» to prepare it and send it again.');
@@ -7988,6 +8009,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
         await live.session.retune({ model: t.model, effort: t.effort ?? null, thinking: t.thinking ?? null });
       }
       live.commands ??= await listCommandsOf(live);
+      if (startToken.stopped) return;
       const row = resolveCommand(live.commands, command.name);
       if (row && isDenied(row.name, live.terminalCommands ?? [])) {
         store.addChat(task, chat.id, 'assistant', deniedCommandText(command.name));
@@ -8003,13 +8025,18 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
     }
     let siblings = '';
     if (!command) {
+      const waiting = [...(chat.notes ?? [])];
       ({ text, attachments, voice: turnVoice } = withNotes(task, chat, text, attachments, turnVoice));
+      // Stopped from here on, the notes are still unsent: back in line they go.
+      startToken.giveBack = () => {
+        chat.notes = [...waiting, ...(chat.notes ?? [])];
+        for (const note of waiting) markDelivery(task, chat, note.messageId, 'pending');
+      };
       // What the siblings did while this chat was away, worked out now rather
       // than pre-cooked.
       siblings = await siblingsBriefing(task, chat);
     }
     headBefore = await headCommit(machineOf(task), task.worktreePath);
-    if (!command) drainNews(chat);   // the briefing above already covers everything until now
 
     // Uploads land on this machine; Claude reads them on the task's. For a
     // local task that is the same place and `putAttachment` hands the path back.
@@ -8027,6 +8054,19 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       throw e;
     }
 
+    // A session closed while idle reopens on this send: hand it the tuning the
+    // chat resolves to now, so a change of the role «chat» reaches chats that
+    // inherit it when they reopen (they do not follow it live).
+    if (!live.session.alive) {
+      const t = chatSessionTuning(task, chat, 'chat');
+      await live.session.retune({ model: t.model, effort: t.effort ?? null, thinking: t.thinking ?? null });
+    }
+    // The last point where Stop keeps the message from the session: there is no
+    // `await` from here to the send.
+    if (startToken.stopped) return;
+    startToken.sent = true;
+    if (!command) drainNews(chat);   // the briefing above already covers everything until now
+
     // The turn's tree goes right after the prompt that started it, stamped
     // with the machine whose transcripts it will point at.
     live.activity = store.pushChat(task, chat, { ...newActivity(), machine: machine.name });
@@ -8035,13 +8075,6 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       .filter((name) => name !== machine.name)
       .map((name) => machineViewFor(task, name).machine?.platform)
       .filter(Boolean);
-    // A session closed while idle reopens on this send: hand it the tuning the
-    // chat resolves to now, so a change of the role «chat» reaches chats that
-    // inherit it when they reopen (they do not follow it live).
-    if (!live.session.alive) {
-      const t = chatSessionTuning(task, chat, 'chat');
-      await live.session.retune({ model: t.model, effort: t.effort ?? null, thinking: t.thinking ?? null });
-    }
     const rules = command ? null : holder
       ? renderPrompt('chat-project-rules', {
         ...promptVarsFor(task, 'chat'),
@@ -8134,11 +8167,14 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       store.addLog(task, 'chat', `«${chat.title}»: ${calls} herramienta${calls === 1 ? '' : 's'}, ${subagentsUsed(result.toolCounts)} subagentes`);
     }
   } catch (e) {
+    if (startToken.stopped) return;
     turnOutcome = 'error';
     store.addChat(task, chat.id, 'assistant', e.attachmentFailed
       ? `⚠️ Could not carry the attachment: ${e.message}`
       : `⚠️ Could not open the session: ${e.message}`);
   } finally {
+    // The chat is no longer this turn's: nothing here is its to clean up.
+    if (startToken.stopped) return;
     // Not `closeAll`: a subagent or a background build launched by this turn
     // is still legitimately running, and reports to its tree when it ends.
     dropIfEmpty(task, chat, live.activity);
@@ -8201,21 +8237,26 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
  * All the chats of a project share one worktree, so it is never moved under a
  * sibling that is working: that turn goes ahead with a note instead. A failed
  * refresh is a log line, not a failed turn; a failed ensure throws.
+ *
+ * A `turn` stopped meanwhile leaves the chat alone, and nothing further is
+ * done for it. The checkout step it started goes on: others may share it.
  */
-async function prepareHolderTurn(holder, chat) {
+async function prepareHolderTurn(holder, chat, turn) {
   const created = !holder.worktreePath;
   const before = chat.activity;
   await chatOwnerHooks.ensure(holder, {
     onLine: (line) => {
       // The checkout step's own line (git says «Cloning into», capitalised).
-      if (/^cloning \S+ into /.test(line)) chat.activity = `cloning ${repoOf(holder) || holder.project} on ${holder.machine}…`;
+      if (!turn.stopped && /^cloning \S+ into /.test(line)) chat.activity = `cloning ${repoOf(holder) || holder.project} on ${holder.machine}…`;
       store.addLog(holder, 'chat', line);
     },
     onWarning: (warning) => {
       store.addLog(holder, 'chat', warning);
-      store.addChat(holder, chat.id, 'assistant', warning);
+      // A stopped turn leaves the chat free to be deleted before this arrives.
+      if (chatById(holder, chat.id)) store.addChat(holder, chat.id, 'assistant', warning);
     },
   });
+  if (turn.stopped) return;
   if (chat.activity !== before) {
     chat.activity = before;
     store.touch(holder);
@@ -8236,6 +8277,7 @@ async function prepareHolderTurn(holder, chat) {
   let result = null;
   try {
     result = await chatOwnerHooks.refresh(holder);
+    if (turn.stopped) return;
   } catch (e) {
     store.addLog(holder, 'chat', `⚠️ could not update the project worktree (${reasonOf(e)})`);
     return;
@@ -8553,8 +8595,25 @@ export async function interruptChat(issue, chatId) {
   const chat = task && chatById(task, chatId);
   if (!chat) throw new Error('That chat does not exist');
   // Not refused during a move: stopping is always safe.
-  const live = liveChats.get(liveKey(ownerKeyOf(task), chat.id));
+  const lk = liveKey(ownerKeyOf(task), chat.id);
+  const live = liveChats.get(lk);
   if (!chat.busy) throw new Error('That chat has no turn in progress');
+  // Still preparing (a clone can take minutes): there is no session turn to
+  // interrupt, and an idle process being up would not keep the prompt from it.
+  const preparing = starting.get(lk);
+  if (preparing && !preparing.sent) {
+    preparing.stop();
+    if (live) live.ownTurn = false;
+    chat.busy = false;
+    chat.activity = null;
+    const cloning = isHolder(task)
+      && checkoutsBusy().some((j) => j.machine === task.machine && j.project === task.project);
+    store.addChat(task, chat.id, 'assistant', '⏹️ Turn stopped by the user before it started: the message was not sent.'
+      + (cloning ? ' The checkout of the project goes on in the background.' : '')
+      + ((chat.notes ?? []).length ? ' What was still waiting goes with your next message.' : ''));
+    store.touch(task);
+    return;
+  }
   if (!live?.session.alive) {
     // «Working» with no process behind it: a leftover. Stop means stop —
     // the chat is put back in order rather than told there is nothing to do.
