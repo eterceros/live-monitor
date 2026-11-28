@@ -4,9 +4,10 @@ import path from 'node:path';
 import { DATA_DIR } from './config.js';
 import { store } from './store.js';
 import { migrateChats, resetChatsOnBoot } from './chats.js';
-import { machines, machineFor, machineViewFor } from './machine.js';
+import { machines, machineFor, machineViewFor, ensureHome } from './machine.js';
+import { ensureCheckout } from './checkout.js';
 import { listProjects, projectOf, baseBranchOf } from './projects.js';
-import { ensureDetachedWorktree, refreshDetachedWorktree } from './worktree.js';
+import { ensureDetachedWorktree, refreshDetachedWorktree, isProjectWorktree } from './worktree.js';
 import { PROJECT_WORKTREE_DIR, isHolderKey, parseHolderKey } from './keys.js';
 import { SerCache, objectChunks, writeAtomicSync, writeChunksAtomic } from './persistcache.js';
 import {
@@ -77,6 +78,8 @@ let noSplit = false;
 let lens = new WeakMap();
 /** key → in-flight `ensureHolderWorktree`, so two chats starting at once create it once. */
 const ensuring = new Map();
+/** key → in-flight `refreshHolderWorktree`: one move of the shared worktree at a time. */
+const refreshing = new Map();
 
 export const holderKey = (project, machine) => `${project}@${machine}`;
 
@@ -241,6 +244,7 @@ export function _resetProjectChatsForTests() {
   loaded = false;
   holders.clear();
   ensuring.clear();
+  refreshing.clear();
 }
 
 function allowed(project, machine) {
@@ -581,11 +585,27 @@ export function persistHolder(holder, hint = null, changed = null) {
 
 const machineOfHolder = (holder) => machineFor(holder.machine ?? 'local', holder.project);
 
-/** The holder's detached worktree, created on first use. Resolves to its path on that machine. */
-export async function ensureHolderWorktree(holder, { onLine } = {}) {
+/**
+ * The holder's detached worktree, created on first use. Resolves to its path on
+ * that machine. Before creating it, a runner gets the project checkout (cloned if
+ * missing); `onLine` hears that progress and `onWarning` what the checkout step
+ * warns about. A caller that joins a run in flight gets only its result.
+ */
+export async function ensureHolderWorktree(holder, { onLine, onWarning } = {}) {
   const key = holderKey(holder.project, holder.machine);
   if (ensuring.has(key)) return ensuring.get(key);
   const job = (async () => {
+    const name = holder.machine ?? 'local';
+    await ensureHome(name);
+    // A worktree that is already usable needs no check: it would put a fetch
+    // from GitHub in front of every turn. An error here (the runner went away)
+    // is left for the checkout step to explain.
+    const usable = holder.worktreePath
+      && await isProjectWorktree(machineOfHolder(holder), holder.worktreePath).catch(() => false);
+    if (!usable) {
+      const { warnings } = await ensureCheckout(name, holder.project, { onLine });
+      for (const warning of warnings) onWarning?.(warning);
+    }
     const wtPath = await ensureDetachedWorktree(
       machineOfHolder(holder), baseBranchOf(holder.project), PROJECT_WORKTREE_DIR, { onLine },
     );
@@ -599,13 +619,23 @@ export async function ensureHolderWorktree(holder, { onLine } = {}) {
   return job;
 }
 
-/** Brings the worktree to origin/base when harmless; records what HEAD is. Resolves to `{ moved, note, head }`. */
+/**
+ * Brings the worktree to origin/base when harmless; records what HEAD is.
+ * Resolves to `{ moved, note, head }`. A call made while one runs joins it: a
+ * turn stopped mid-refresh leaves the chat free to ask again.
+ */
 export async function refreshHolderWorktree(holder) {
   if (!holder.worktreePath) return { moved: false, note: null, head: holder.head ?? null };
-  const r = await refreshDetachedWorktree(machineOfHolder(holder), holder.worktreePath, baseBranchOf(holder.project));
-  holder.head = r.head;
-  store.touch(holder);
-  return r;
+  const key = holderKey(holder.project, holder.machine);
+  if (refreshing.has(key)) return refreshing.get(key);
+  const job = (async () => {
+    const r = await refreshDetachedWorktree(machineOfHolder(holder), holder.worktreePath, baseBranchOf(holder.project));
+    holder.head = r.head;
+    store.touch(holder);
+    return r;
+  })().finally(() => refreshing.delete(key));
+  refreshing.set(key, job);
+  return job;
 }
 
 // The store dispatches on `kind === 'project'` through these.

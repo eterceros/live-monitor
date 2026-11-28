@@ -62,6 +62,7 @@ const ALLOWLIST = {
   'files.js': [5, 'import + allowedRoots comparison + legacy chat task fallback + legacy bare-issue route + comparison'],
   'pipeline.js': [2, 'import + legacy rows without project in the PR-checks sweep (one reader)'],
   'index.js': [11, 'import + route layer: legacy clients (bare issue, /api/preview), board-wide tuning, empty-registry fallback, legacy rows'],
+  'checkout.js': [3, 'import + projectRepo and isConventionPath comparisons: the default project may read its repo from the board checkout, and its path is never cloned unasked'],
 };
 
 test('no function parameter defaults to DEFAULT_PROJECT_ID', () => {

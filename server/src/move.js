@@ -16,6 +16,7 @@ import {
   foreignWorktreeFor, dirSize,
 } from './worktree.js';
 import { baseBranchOf } from './projects.js';
+import { checkoutReadiness, projectRepo } from './checkout.js';
 import {
   assertMachineReady, gitBusyReason, closeTaskSessions, closeLiveSession, continuationContext,
   refreshBranchStatus, withInfraRetries, gitMutex, markRunning, tick, assertNotMoving,
@@ -47,6 +48,8 @@ const HANDOFF_TIMEOUT_MS = 5 * 60_000;
 const PREWARM_TIMEOUT_MS = 90 * 60_000;
 const SIZE_TTL_MS = 10 * 60_000;
 const FETCH_TTL_MS = 30_000;
+/** The fetch of the checkout check, held to the limit `fetchBranch` has: somebody is waiting for the answer. */
+const CHECKOUT_FETCH_MS = 2 * 60_000;
 
 const HOME_TTL_MS = 10 * 60_000;
 
@@ -79,13 +82,17 @@ function cachedHome(machine) {
  * the SDK's, which an in-process runner answers with whatever the host has;
  * `homeOf` decides where transcripts are looked for, so a test never writes
  * into the user's real `~/.claude/projects`; `probeMs` is how long a remote
- * probe may take before the target counts as unreachable.
+ * probe may take before the target counts as unreachable, and how long the
+ * dialog waits for the checkout check before showing it as still under way;
+ * `checkoutReadiness` wants a GitHub origin, which a test's local one is not.
  */
 export const moveHooks = {
   runClaude: (options) => runClaude(options),
   assertMachineReady: (machine) => assertMachineReady(machine),
   homeOf: (machine) => cachedHome(machine),
   probeMs: PROBE_MS,
+  checkoutFetchMs: CHECKOUT_FETCH_MS,
+  checkoutReadiness: (machine, options) => checkoutReadiness(machine, options),
 };
 
 const httpError = (status, message, extra = {}) => Object.assign(new Error(message), { status, ...extra });
@@ -330,6 +337,45 @@ function cachedFetch(machine, cwd, branch) {
   return promise;
 }
 
+const readinessCache = new Map();   // machine, checkout, repo, base -> { at, promise, pending, outlived }
+
+/**
+ * The checkout check fetches, so while the dialog polls a check under way is
+ * joined, and a "ready" is trusted as long as a branch fetch is. Anything else
+ * is asked again, so a checkout somebody just fixed shows at once, unless the
+ * dialog stopped waiting for it (`outlived`): then the answer is kept for a
+ * later poll to read. A `fresh` check, right before a move, is always its own.
+ */
+function targetReadiness(machine, options, fresh) {
+  const key = [machine.name, machine.repoPath, options.repo, options.baseBranch].join('\0');
+  const hit = readinessCache.get(key);
+  if (!fresh && hit && (hit.pending || Date.now() - hit.at < FETCH_TTL_MS)) return hit;
+  const promise = Promise.resolve().then(() => moveHooks.checkoutReadiness(
+    machine, { ...options, fetchTimeoutMs: moveHooks.checkoutFetchMs },
+  ));
+  const entry = { at: Date.now(), promise, pending: true, outlived: false };
+  readinessCache.set(key, entry);
+  const settled = (ready) => {
+    entry.pending = false;
+    entry.at = Date.now();
+    if (!ready && !entry.outlived && readinessCache.get(key) === entry) readinessCache.delete(key);
+  };
+  promise.then((state) => settled(state.ready), () => settled(false));
+  return entry;
+}
+
+const STILL_CHECKING = Symbol('still checking');
+
+/** The answer of `entry`, or `STILL_CHECKING` after `ms`: the check goes on. */
+function readinessWithin(entry, ms) {
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => { entry.outlived = entry.pending; resolve(STILL_CHECKING); }, ms);
+    timer.unref?.();
+  });
+  return Promise.race([entry.promise, expired]).finally(() => clearTimeout(timer));
+}
+
 const sizeCache = new Map();    // `${machine}\0${path}` -> { at, promise }
 
 /**
@@ -425,15 +471,31 @@ async function inspectTarget(task, to, { fetchFn = cachedFetch, fresh = false } 
     return out;
   }
 
-  // A runner only holds the projects somebody put there: the checkout must exist
-  // before a worktree can be cut from it. (Local checkouts come from the registry.)
+  // A runner only holds the projects somebody put there: the checkout must be
+  // usable before a worktree can be cut from it. (Local checkouts come from the registry.)
   if (machine.kind === 'runner' && machine.repoPath) {
     try {
-      const has = await probe(machine.fs.exists(machine.path.join(machine.repoPath, '.git')), 'looking for the project checkout');
-      if (!has) { out.noCheckout = machine.repoPath; return out; }
+      if (!await probe(machine.fs.exists(machine.repoPath), 'looking for the project checkout')) {
+        out.noCheckout = machine.repoPath;
+        return out;
+      }
+      // Not an unreachable box if slow, for the same reason as the branch fetch
+      // below: this fetches. The move waits it out, within the fetch's limit;
+      // the dialog does not, and asks again on its next poll.
+      const check = targetReadiness(machine, { repo: projectRepo(task.project), baseBranch: baseBranchOf(task.project) }, fresh);
+      const state = fresh ? await check.promise : await readinessWithin(check, moveHooks.probeMs);
+      if (state === STILL_CHECKING) {
+        out.checking = true;
+        return out;
+      }
+      if (!state.ready) {
+        if (state.code === 'missing') out.noCheckout = machine.repoPath;
+        else out.notReady = state.reason;
+        return out;
+      }
     } catch (e) {
       out.error = e.message;
-      out.unreachable = /sin respuesta|no response/.test(e.message);
+      out.unreachable = e.code === 'RUNNER_OFFLINE' || /sin respuesta|no response/.test(e.message);
       return out;
     }
   }
@@ -533,7 +595,15 @@ function blockersFrom(task, to, source, target, { discardTargetLocal = false, re
   }
   if (target.noCheckout) {
     add('project_not_prepared',
-      `The project "${task.project}" is not on ${to} yet: nothing at ${target.noCheckout}. Clone it there and install its dependencies (remote/bootstrap.sh project <id> <git-url>)`);
+      `The project "${task.project}" is not on ${to} yet: nothing at ${target.noCheckout}. Use Prepare to clone it there and install its dependencies`);
+    return blockers;
+  }
+  if (target.checking) {
+    add('checkout_checking', `The checkout of "${task.project}" on ${to} is still being checked (its git fetch has not answered yet): this updates by itself`);
+    return blockers;
+  }
+  if (target.notReady) {
+    add('checkout_not_ready', `The checkout of "${task.project}" on ${to} is not ready: ${target.notReady}`);
     return blockers;
   }
   if (target.error) {

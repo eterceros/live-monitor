@@ -611,3 +611,27 @@ test('commands() on its own, never followed by a prompt, does not keep the proce
   assert.equal(s.alive, false);
   assert.equal(closed, true);
 });
+
+test('selfTurn is true only while a turn the process started by itself runs', async () => {
+  const seen = [];
+  let s;
+  const q = fakeQuery({
+    script: (u) => [
+      { type: 'system', subtype: 'init', session_id: 's1', model: 'm' },
+      { type: 'assistant', user_message_uuid: u.uuid, message: { content: [{ type: 'text', text: 'ok' }] } },
+      { type: 'result', subtype: 'success', result: 'ok', session_id: 's1', user_message_uuid: u.uuid, num_turns: 1 },
+    ],
+  });
+  s = new ChatSession({
+    cwd: '.', model: 'm', idleMs: 0, queryFn: q,
+    onEvent: (e) => { if (e.kind === 'turn_start' || e.kind === 'turn_end') seen.push([e.kind, e.own, s.selfTurn]); },
+  });
+  // The first frame is an `init` before any prompt of ours: a turn of its own.
+  await s.commands().catch(() => {});
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(s.selfTurn, true);
+  await s.send('hola');
+  assert.deepEqual(seen.at(-2), ['turn_start', true, false]);
+  assert.equal(s.selfTurn, false);
+  s.close();
+});

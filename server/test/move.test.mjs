@@ -5,7 +5,7 @@
 // real `~/.claude/projects`.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -47,6 +47,7 @@ let savedMachines;
 const w = {};
 const handoffCalls = [];
 let failTarget = false;
+let realReadiness;
 
 before(async () => {
   ({ config } = await import('../src/config.js'));
@@ -94,6 +95,11 @@ before(async () => {
   };
 
   move.moveHooks.homeOf = async (m) => HOME[m.name];
+  // These origins are local paths, which the real check refuses as "not the project's repo".
+  realReadiness = move.moveHooks.checkoutReadiness;
+  move.moveHooks.checkoutReadiness = async (m) => (await m.fs.exists(m.path.join(m.repoPath, '.git'))
+    ? { ready: true }
+    : { ready: false, code: 'incomplete', reason: `${m.repoPath} is not a complete git checkout` });
   move.moveHooks.assertMachineReady = async (m) => {
     if (failTarget && m.name === 'box') throw new Error('box caída a propósito');
   };
@@ -414,11 +420,84 @@ test('un destino que no contesta y uno cuyo git worktree list falla son un bloqu
     assert.match(ghost.find((b) => b.code === 'target_git')?.text ?? '', /worktree list/, JSON.stringify(ghost));
 
     const vacio = await move.moveBlockers(task, 'vacio');
-    assert.match(vacio.find((b) => b.code === 'project_not_prepared')?.text ?? '', /not on vacio yet/, JSON.stringify(vacio));
+    const missing = vacio.find((b) => b.code === 'project_not_prepared')?.text ?? '';
+    assert.match(missing, /not on vacio yet.*Use Prepare/, JSON.stringify(vacio));
+    assert.doesNotMatch(missing, /bootstrap/);
   } finally {
     config.machines = original;
     move.moveHooks.probeMs = probeMs;
     move.moveHooks.assertMachineReady = ready;
+  }
+});
+
+test('a checkout on the target that is not ready is its own blocker, and is left untouched', async () => {
+  const task = await taskOnLocal('not-ready', { sessionId: null });
+  const original = config.machines;
+  const stub = move.moveHooks.checkoutReadiness;
+  const half = path.join(ROOT, 'half');
+  mkdirSync(half, { recursive: true });
+  writeFileSync(path.join(half, 'keep.txt'), 'mine\n');
+  // `other` is `box` under a name whose readiness nothing has cached yet.
+  config.machines = { ...original, half: { ...original.box, repoPath: half }, other: { ...original.box } };
+  move.moveHooks.checkoutReadiness = realReadiness;
+  try {
+    // A directory without .git: there is something there, so it is not "not prepared".
+    const incomplete = await move.moveBlockers(task, 'half');
+    assert.match(incomplete.find((b) => b.code === 'checkout_not_ready')?.text ?? '',
+      /on half is not ready: .*left untouched/, JSON.stringify(incomplete));
+    assert.ok(!incomplete.some((b) => b.code === 'project_not_prepared'), JSON.stringify(incomplete));
+    assert.equal(readFileSync(path.join(half, 'keep.txt'), 'utf8'), 'mine\n');
+
+    // A real checkout whose origin is not the project's repository.
+    const foreign = await move.moveBlockers(task, 'other');
+    assert.match(foreign.find((b) => b.code === 'checkout_not_ready')?.text ?? '', /origin/, JSON.stringify(foreign));
+
+    // Not ready is not remembered; ready is, so the polling dialog does not fetch every time.
+    let asked = 0;
+    let answer = { ready: false, code: 'base_missing', reason: 'origin/main does not resolve' };
+    move.moveHooks.checkoutReadiness = async () => { asked += 1; return answer; };
+    await move.moveBlockers(task, 'other');
+    answer = { ready: true };
+    const fixed = await move.moveBlockers(task, 'other');
+    assert.ok(!fixed.some((b) => b.code === 'checkout_not_ready'), JSON.stringify(fixed));
+    await move.moveBlockers(task, 'other');
+    assert.equal(asked, 2);
+  } finally {
+    config.machines = original;
+    move.moveHooks.checkoutReadiness = stub;
+  }
+});
+
+test('a stalled checkout check does not hold the dialog: it says so, the next polls join it, and the answer shows', async () => {
+  const task = await taskOnLocal('stalled', { sessionId: null });
+  const original = config.machines;
+  const stub = move.moveHooks.checkoutReadiness;
+  const { probeMs } = move.moveHooks;
+  config.machines = { ...original, stalled: { ...original.box } };
+  const asked = [];
+  let answer;
+  const answered = new Promise((r) => { answer = r; });
+  move.moveHooks.checkoutReadiness = (m, options) => { asked.push(options); return answered; };
+  move.moveHooks.probeMs = 400;   // also the leash of the other probes of this runner
+  try {
+    for (let poll = 0; poll < 2; poll += 1) {
+      const started = Date.now();
+      const blockers = await move.moveBlockers(task, 'stalled');
+      assert.ok(Date.now() - started < 5000);
+      assert.ok(blockers.some((b) => b.code === 'checkout_checking'), JSON.stringify(blockers));
+    }
+    assert.equal(asked.length, 1, 'one check, joined by the polls');
+    assert.equal(asked[0].fetchTimeoutMs, 2 * 60_000, 'the fetch has its own, shorter limit here');
+    answer({ ready: false, code: 'fetch_failed', reason: 'git fetch failed (exit -2): timed out' });
+    await new Promise((r) => setTimeout(r, 20));
+    const after = await move.moveBlockers(task, 'stalled');
+    assert.match(after.find((b) => b.code === 'checkout_not_ready')?.text ?? '', /timed out/, JSON.stringify(after));
+    assert.equal(asked.length, 1, 'the answer the dialog had stopped waiting for is the one shown');
+  } finally {
+    answer({ ready: true });
+    config.machines = original;
+    move.moveHooks.checkoutReadiness = stub;
+    move.moveHooks.probeMs = probeMs;
   }
 });
 

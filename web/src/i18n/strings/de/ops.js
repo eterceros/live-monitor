@@ -179,7 +179,7 @@ export default {
     prepareRetry: 'Erneut versuchen',
     prepareTitle: 'Projekt auf {to} klonen und seine Abhängigkeiten installieren',
     prepareFailed: 'Vorbereitung fehlgeschlagen: {message}',
-    prepareStep: { clone: 'Repository wird geklont', worktrees: 'Worktree-Ordner wird angelegt', install: 'Abhängigkeiten werden installiert' },
+    prepareStep: { queued: 'Wartet auf eine andere Vorbereitung auf diesem Rechner', clone: 'Repository wird geklont', worktrees: 'Worktree-Ordner wird angelegt', install: 'Abhängigkeiten werden installiert' },
     discard: 'lokale Änderungen auf {to} verwerfen',
     whatWillHappen: 'Was passieren wird:',
     worktreeAria: 'Worktree auf {from}',

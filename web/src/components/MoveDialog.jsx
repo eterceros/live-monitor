@@ -74,11 +74,14 @@ function planLines(data, task, to) {
   return lines;
 }
 
+/** A preparation waiting its turn on the machine is as unfinished as a running one. */
+const unfinished = (job) => job?.status === 'queued' || job?.status === 'running';
+
 /**
  * «Prepare» for a blocker that says the project is not on the destination
  * runner: clones it and installs its dependencies there. Reads the job on open
  * (one may already be running, started from another tab) and every two seconds
- * while it runs; `onDone` asks the dialog to re-check right away.
+ * while it is queued or running; `onDone` asks the dialog to re-check right away.
  */
 function PrepareRow({ project, machine, onDone }) {
   const t = useStrings().ops.move;
@@ -97,7 +100,7 @@ function PrepareRow({ project, machine, onDone }) {
         const next = await api.prepareStatus(project, machine);
         if (cancelled) return;
         setJob(next);
-        if (next.status === 'running') timer = setTimeout(read, PREPARE_POLL_MS);
+        if (unfinished(next)) timer = setTimeout(read, PREPARE_POLL_MS);
         else if (next.status === 'done') onDone();
       } catch (e) {
         if (!cancelled) setError(e.message);
@@ -120,7 +123,7 @@ function PrepareRow({ project, machine, onDone }) {
     }
   };
 
-  const running = job?.status === 'running';
+  const running = unfinished(job);
   const failure = error ?? (job?.status === 'failed' ? job.error : null);
   return (
     <span className="move-prepare">

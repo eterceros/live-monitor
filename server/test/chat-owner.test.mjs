@@ -281,6 +281,37 @@ test('si ensure falla, el turno no arranca y el chat queda libre con el motivo',
   }
 });
 
+test('the checkout step reports to the holder log, names the clone as the activity and posts the push warning', async () => {
+  const h = holder();
+  h.worktreePath = gitRepo();
+  const prevEnsure = pipeline.chatOwnerHooks.ensure;
+  const prevRefresh = pipeline.chatOwnerHooks.refresh;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  pipeline.chatOwnerHooks.ensure = async (owner, { onLine, onWarning }) => {
+    onLine('cloning o/hfs into /home/zoe/src/hfs on devbox');
+    await gate;
+    onWarning('⚠️ branches cannot be pushed from devbox.');
+    return owner.worktreePath;
+  };
+  pipeline.chatOwnerHooks.refresh = async () => ({ moved: false, note: null, head: null });
+  try {
+    const chat = chats.addChatTo(h, {});
+    sent.length = 0;
+    pipeline.sendChat(holderKeyStr(), chat.id, 'hola');
+    await until(() => h.log?.some((l) => l.phase === 'chat' && /^cloning o\/hfs into /.test(l.line)));
+    assert.match(chat.activity, /^cloning .+ on local…$/);
+    release();
+    await until(() => !chat.busy && sent.length === 1);
+    assert.ok(chat.messages.some((m) => /cannot be pushed from devbox/.test(m.text ?? '')));
+    assert.ok(h.log.some((l) => /cannot be pushed from devbox/.test(l.line)));
+  } finally {
+    release();
+    pipeline.chatOwnerHooks.ensure = prevEnsure;
+    pipeline.chatOwnerHooks.refresh = prevRefresh;
+  }
+});
+
 test('un segundo mensaje mientras el holder prepara el worktree se encola como nota, no abre otro turno', async () => {
   const h = holder();
   h.worktreePath = gitRepo();

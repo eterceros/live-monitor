@@ -12,7 +12,8 @@
 #   all        (default) every stage above, in that order
 #
 # What it needs: sudo, `claude` already logged in (`claude auth status`), `gh`
-# already logged in, and the hfs repo cloned at $HFS_REPO.
+# already logged in (the script makes git use that login for https://github.com),
+# and the hfs repo cloned at $HFS_REPO.
 set -euo pipefail
 
 HFS_REPO="${HFS_REPO:-$HOME/src/hfs}"
@@ -115,6 +116,23 @@ stage_playwright() {
   ok "@playwright/mcp $MCP_VERSION and its Chromium: $(ls ~/.cache/ms-playwright | grep '^chromium-' | tr '\n' ' ')"
 }
 
+# `gh auth status` only says that gh has a login. The board also clones and
+# fetches private repositories on this box, and plain git does not use that login
+# until it is set up as its credential helper: `gh auth login --with-token` does
+# not do it. Checked by asking git for a credential the way the runner service
+# would: nobody to prompt, and no token variable from this shell.
+git_github_login() {
+  gh auth setup-git --hostname github.com \
+    || die "'gh auth setup-git' failed: run 'gh auth login' for github.com, then run this again"
+  local credential
+  credential="$(printf 'protocol=https\nhost=github.com\n\n' \
+    | env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u SSH_ASKPASS GIT_TERMINAL_PROMPT=0 \
+      git -C / -c core.askPass= credential fill 2>/dev/null || true)"
+  grep -q '^password=.' <<<"$credential" \
+    || die "git cannot use the gh login for https://github.com. Run 'gh auth login' (a login kept only in GH_TOKEN does not reach the runner service), then run this again"
+  ok "git uses the gh login for https://github.com"
+}
+
 stage_runner() {
   say "runner: hfs-monitor as a user service"
   local claude_have
@@ -123,6 +141,7 @@ stage_runner() {
     || warn "claude is $claude_have, the board expects $CLAUDE_VERSION_WANTED — the board will refuse remote tasks until they match"
   claude auth status 2>/dev/null | grep -q '"loggedIn": true' || die "claude is not logged in here: run 'claude login'"
   gh auth status >/dev/null 2>&1 || die "gh is not logged in here: run 'gh auth login'"
+  git_github_login
 
   if [ -d "$MONITOR_DIR/.git" ]; then
     git -C "$MONITOR_DIR" pull --ff-only
@@ -193,6 +212,8 @@ stage_project() {
   name="$(basename "$url" .git)"
   dir="${PROJECT_DIR:-$HOME/src/$name}"
   wt="${PROJECT_WT:-$dir-wt}"
+  # This stage also runs on its own; an https GitHub URL needs the same setup.
+  [[ "$url" != https://github.com/* ]] || git_github_login
   if [ -d "$dir/.git" ]; then git -C "$dir" fetch --all --prune; else git clone "$url" "$dir"; fi
   mkdir -p "$wt"
   ok "checkout $dir, worktrees $wt"

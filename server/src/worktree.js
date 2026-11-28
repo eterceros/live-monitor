@@ -227,6 +227,19 @@ export async function classifyRepoState(machine, base) {
 }
 
 /**
+ * Refuses to go on without the project checkout, before any directory is made:
+ * otherwise a stray `<folder>-wt` is left behind and git, started in a missing
+ * directory, fails as `spawn git ENOENT`.
+ */
+async function assertCheckoutPresent(machine) {
+  if (await machine.fs.exists(machine.path.join(machine.repoPath, '.git'))) return;
+  throw Object.assign(
+    new Error(`checkout missing at ${machine.repoPath} on ${machine.name}: there is no git checkout to cut a worktree from`),
+    { code: 'checkout_missing' },
+  );
+}
+
+/**
  * Creates a linked worktree of the project checkout at `<worktreeRoot>/<flat>`,
  * on a new branch cut from origin/<base> (never from the possibly-stale local
  * base branch). The folder name is the branch with `/` flattened to `-` — cosmetic;
@@ -236,6 +249,7 @@ export async function createWorktree(machine, branch, { onLine, adopt = false, b
   const repo = machine.repoPath;
   const wtPath = worktreePathFor(machine, branch);
 
+  await assertCheckoutPresent(machine);
   await machine.fs.mkdir(machine.worktreeRoot);
 
   if (await machine.fs.exists(wtPath)) {
@@ -305,6 +319,7 @@ export async function ensureDetachedWorktree(machine, base, dirName, { onLine } 
   const repo = machine.repoPath;
   const wtPath = machine.path.join(machine.worktreeRoot, dirName);
 
+  await assertCheckoutPresent(machine);
   await machine.fs.mkdir(machine.worktreeRoot);
 
   if (await machine.fs.exists(wtPath)) {
