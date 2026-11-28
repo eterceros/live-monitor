@@ -91,9 +91,11 @@ test('a saved yes can be run again, unless something else already covers it', as
   assert.equal(canRunAgain(runnerRow(), 'no'), false, 'an unsaved change goes through Save');
   assert.equal(canRunAgain(runnerRow({ install: 'no' })), false);
   assert.equal(canRunAgain(runnerRow({ install: null })), false);
-  for (const status of ['queued', 'running', 'done']) {
+  for (const status of ['queued', 'running']) {
     assert.equal(canRunAgain(runnerRow({ job: { status } })), false, status);
   }
+  assert.equal(canRunAgain(runnerRow({ job: { status: 'done' }, installed: true })), false);
+  assert.equal(canRunAgain(runnerRow({ job: { status: 'done' }, installed: false })), true, 'it ended without installing');
   assert.equal(canRunAgain(runnerRow({ kind: 'local', nodeModules: true })), false);
   assert.equal(canRunAgain(runnerRow({ kind: 'local', nodeModules: false })), true);
   const install = read('web/src/components/InstallDepsDialog.jsx');

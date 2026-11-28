@@ -210,6 +210,40 @@ test('after a restart, an accepted install is run only where dependencies are mi
   assert.deepEqual(clones(missing), []);
 });
 
+const withLock = () => {
+  const dir = '/home/zoe/src/ehr';
+  return useBox(fakeBox({ dirs: { [dir]: 'https://github.com/o/ehr.git' }, files: [`${dir}/package-lock.json`] }));
+};
+
+test('a failed install is not retried by a sweep, even after a later clone-only job', async () => {
+  setInstallChoice('ehr', 'devbox', 'yes');
+  const box = withLock();
+  box.shell = async (command) => { box.shells.push(command); return no('boom'); };
+  await sweep(undefined, 'ehr');
+  await idle();
+  assert.equal(checkoutStatus('devbox', 'ehr').status, 'failed');
+  await ensureCheckout('devbox', 'ehr');   // as a chat does
+  await idle();
+  assert.deepEqual(await sweep(undefined, 'ehr'), []);
+  assert.equal(box.shells.length, 1);
+  assert.equal((await machineRow('ehr', 'devbox')).installed, false, 'still offered by hand');
+});
+
+test('a new clone in the same path owes the install again', async () => {
+  setInstallChoice('ehr', 'devbox', 'yes');
+  const box = withLock();
+  await sweep(undefined, 'ehr');
+  await idle();
+  assert.equal(box.shells.length, 1);
+  box.dirs.delete('/home/zoe/src/ehr');
+  await ensureCheckout('devbox', 'ehr');   // a chat clones it again
+  await idle();
+  assert.equal((await machineRow('ehr', 'devbox')).installed, false);
+  assert.deepEqual(pairs(await sweep(undefined, 'ehr')), ['devbox/ehr']);
+  await idle();
+  assert.equal(box.shells.length, 2);
+});
+
 test('a remembered yes installs after the clone', async () => {
   setInstallChoice('ehr', 'devbox', 'yes');
   const box = useBox(fakeBox({ files: ['/home/zoe/src/ehr/package-lock.json'] }));
@@ -253,7 +287,6 @@ for (const [what, change] of [
   ['its runner is excluded', () => setMachineAutoClone('notes', 'devbox', false)],
   ['its project is removed', () => saveProjects([entry('ehr', 'o/ehr')])],
   ['the convention is turned off', () => { config.machines.devbox.projectsRoot = false; }],
-  ['the convention moves its path', () => { config.machines.devbox.projectsRoot = '/srv/elsewhere'; }],
 ]) {
   test(`a queued background clone is given up when ${what}`, async () => {
     const { box, release } = await heldQueue();
@@ -281,11 +314,97 @@ test('a queued clone retried by hand runs although the runner is excluded', asyn
   assert.deepEqual(clones(box), ['o/ehr', 'o/notes']);
 });
 
+const clonedInto = (box) => [...box.dirs.keys()].sort();
+
 test('a queued background clone survives a reload that forgets the runner home', async () => {
   const { box, release } = await heldQueue();
   box.home = null;
   await release();
   assert.deepEqual(clones(box), ['o/ehr', 'o/notes']);
+});
+
+test('a queued clone whose path the convention moves is cloned at the new path only, as is the one under way', async () => {
+  const { box, release } = await heldQueue();
+  config.machines.devbox.projectsRoot = '/srv/new';
+  assert.deepEqual(await sweep(), [], 'the sweep of the edit skips jobs still going');
+  await release();
+  await until(() => box.dirs.has('/srv/new/ehr') && box.dirs.has('/srv/new/notes'));
+  await idle();
+  assert.deepEqual(clonedInto(box), ['/home/zoe/src/ehr', '/srv/new/ehr', '/srv/new/notes']);
+});
+
+test('after a reload the home is asked again before deciding, so a new one moves the clone', async () => {
+  const { box, release } = await heldQueue();
+  box.home = null;
+  box.info = async () => { box.home = '/home/max'; return { home: box.home }; };
+  await release();
+  await until(() => box.dirs.has('/home/max/src/notes'));
+  await idle();
+  assert.equal(box.dirs.has('/home/zoe/src/notes'), false);
+});
+
+test('a runner whose sweep met a job still going is looked at again by the timer', async () => {
+  const { box, release } = await heldQueue();
+  await sweep();
+  await release();
+  const asked = box.infos;
+  await retryTick();
+  assert.equal(box.infos, asked + 1);
+  await retryTick();
+  assert.equal(box.infos, asked + 1);
+});
+
+for (const infoFails of [false, true]) {
+  const how = infoFails ? 'and `/info` fails' : 'and `/info` answers';
+  const forget = (box) => {
+    box.home = null;
+    if (infoFails) box.info = async () => { throw new Error('refused'); };
+  };
+
+  test(`an excluded runner is not cloned to when a reload forgot its home ${how}`, async () => {
+    const { box, release } = await heldQueue();
+    setMachineAutoClone('notes', 'devbox', false);
+    forget(box);
+    await release();
+    assert.deepEqual(clones(box), ['o/ehr']);
+  });
+
+  test(`an excluded runner gets no queued install when a reload forgot its home ${how}`, async () => {
+    const dir = '/home/zoe/src/notes';
+    setInstallChoice('notes', 'devbox', 'yes');
+    const { box, release } = await heldQueue(useBox(fakeBox({
+      dirs: { [dir]: 'https://github.com/o/notes.git' }, files: [`${dir}/package-lock.json`],
+    })));
+    setMachineAutoClone('notes', 'devbox', false);
+    forget(box);
+    await release();
+    assert.equal(box.shells.length, 0);
+  });
+}
+
+test('an install skipped while excluded runs once the runner is taken back in', async () => {
+  const lock = '/home/zoe/src/notes/package-lock.json';
+  setInstallChoice('notes', 'devbox', 'yes');
+  const { box, release } = await heldQueue(useBox(fakeBox({ files: [lock] })));
+  // A chat needs it, so the clone runs; the install is still the board's own idea.
+  const joined = ensureCheckout('devbox', 'notes');
+  setMachineAutoClone('notes', 'devbox', false);
+  await release();
+  await joined;
+  assert.equal(box.shells.length, 0);
+  assert.equal(checkoutStatus('devbox', 'notes').status, 'done');
+  assert.equal((await machineRow('notes', 'devbox')).installed, false);
+  // A later clone-only job must not make the board forget what it owes.
+  await ensureCheckout('devbox', 'notes');
+  await idle();
+
+  setMachineAutoClone('notes', 'devbox', true);
+  assert.deepEqual(pairs(await sweep('devbox', 'notes')), ['devbox/notes']);
+  await idle();
+  assert.equal(box.shells.length, 1);
+  assert.equal((await machineRow('notes', 'devbox')).installed, true);
+  // This install leaves no `node_modules` (nothing to put there): not repeated.
+  assert.deepEqual(await sweep('devbox', 'notes'), []);
 });
 
 test('a queued background install is skipped once the answer is no, and the clone still runs', async () => {
@@ -419,7 +538,7 @@ test('the rows say what each machine has of a project', async () => {
   assert.equal(rows[0].nodeModules, false);
   assert.deepEqual(rows[1], {
     machine: 'devbox', kind: 'runner', eligible: false, reason: 'excluded', autoClone: false, present: true,
-    job: { status: 'idle', step: null, error: null, code: null }, deferred: false, install: 'no',
+    job: { status: 'idle', step: null, error: null, code: null }, deferred: false, install: 'no', installed: false,
   });
   assert.deepEqual(await machineRow('ehr', 'devbox'), rows[1]);
   await assert.rejects(machineRows('ghost'), { status: 404 });

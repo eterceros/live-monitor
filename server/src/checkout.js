@@ -214,6 +214,21 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+/**
+ * How the last install attempted in each checkout ended since the board started:
+ * `ran` or `failed`, by pair and path. It outlives the job (a later clone-only
+ * job, or a skipped install, says nothing about it) but not a new clone there.
+ * An install the board's update put off was never attempted.
+ */
+const installOutcomes = new Map();
+
+const installKey = (machineName, projectId, repoPath) => `${keyOf(machineName, projectId)}\n${repoPath}`;
+
+/** `ran`, `failed` or null when no install was attempted there; see `installOutcomes`. */
+export function installOutcome(machineName, projectId, repoPath) {
+  return installOutcomes.get(installKey(machineName, projectId, repoPath)) ?? null;
+}
+
 /** True when this pair's last job got as far as having the checkout there. */
 export function checkoutWasReady(machineName, projectId) {
   return jobs.get(keyOf(machineName, projectId))?.checkoutReady === true;
@@ -266,11 +281,12 @@ async function dropIfUnwanted(job) {
  * @param {(machine, tools: {push: Function, setStep: Function}) => Promise<void>} [options.install]
  *   runs on the queue once the checkout is ready. Only the callers that pass one
  *   wait for it (and see it fail); the others are answered at "ready".
- * @param {{clone: () => boolean, install: () => boolean}} [options.stillWanted]
+ * @param {{clone: () => boolean, install: () => boolean, settled?: () => void}} [options.stillWanted]
  *   passed by a caller nobody asked (background cloning). While only such
- *   callers hold a job, both are asked again at its turn in the queue: the clone
- *   is given up, or the install skipped, when the answer is no. A caller without
- *   it makes what it asks for unconditional.
+ *   callers hold a job, `clone` and `install` are asked again at its turn in the
+ *   queue: the clone is given up, or the install skipped, when the answer is no.
+ *   A caller without it makes what it asks for unconditional. `settled` is
+ *   called once a job that has one ends, however it ends.
  * @returns {Promise<{cloned: boolean, warnings: string[], cancelled?: boolean}>}
  */
 export async function ensureCheckout(machineName, projectId, { onLine, install, stillWanted } = {}) {
@@ -355,12 +371,23 @@ async function runJob(job) {
     if (job.install) {
       await inMachineTurn(job, async () => {
         // The answer may have changed while this waited.
-        if (!job.installAsked && !job.stillWanted.install()) return;
+        if (!job.installAsked) {
+          // A config reload meanwhile forgets the runner's `~`.
+          await ensureHome(job.machine).catch(() => {});
+          if (!job.installAsked && !job.stillWanted.install()) return;
+        }
         assertNotUpgrading();
-        await job.install(machine, {
-          push: (line) => push(job, line),
-          setStep: (step) => update(job, { step }),
-        });
+        const where = installKey(job.machine, job.project, machine.repoPath);
+        try {
+          await job.install(machine, {
+            push: (line) => push(job, line),
+            setStep: (step) => update(job, { step }),
+          });
+        } catch (e) {
+          installOutcomes.set(where, 'failed');
+          throw e;
+        }
+        installOutcomes.set(where, 'ran');
       });
     }
     // No `await` between reading `job.install` and this, or between the install's turn and this.
@@ -380,6 +407,9 @@ async function runJob(job) {
     update(job, { status: 'failed', error: e.message, code: typeof e.code === 'string' ? e.code : null });
     job.ready.reject(e);   // a no-op when only the install failed
     job.done.reject(e);
+  } finally {
+    // A listener that fails must not become an unhandled rejection.
+    try { job.stillWanted?.settled?.(); } catch (e) { console.error(`[checkout] settled listener failed: ${e.message}`); }
   }
 }
 
@@ -406,7 +436,7 @@ function offConvention(machineName, projectId) {
  * Whether the board may clone this project on this machine on its own, and if
  * not, the first reason why: `unknown_machine`, `local`, `unknown_project`,
  * `no_repo`, `default_project`, `explicit_path`, `projects_root_off`,
- * `home_unknown` or `excluded`. `home_unknown` goes away once the runner has
+ * `excluded` or `home_unknown`. `home_unknown` goes away once the runner has
  * answered `/info` (`ensureHome`). Looks at nothing on the runner and asks it
  * nothing.
  *
@@ -424,10 +454,10 @@ export function backgroundEligible(machineName, projectId) {
   const declared = config.machines?.[machineName]?.projectsRoot;
   const root = declared === undefined ? DEFAULT_PROJECTS_ROOT : declared;
   if (typeof root !== 'string' || !root.trim()) return no('projects_root_off');
+  if (!machineOptionsOf(projectId, machineName).autoClone) return no('excluded');
   if (!declaredProject(machineName, projectId)) {
     return no(root.trim().startsWith('~') && !base.home ? 'home_unknown' : 'projects_root_off');
   }
-  if (!machineOptionsOf(projectId, machineName).autoClone) return no('excluded');
   return { eligible: true, reason: null };
 }
 
@@ -463,6 +493,7 @@ async function bringCheckout(job) {
       }
       assertNotUpgrading();
       await clone(job, machine, options);
+      installOutcomes.delete(installKey(job.machine, job.project, repoPath));
       return true;
     });
   }
@@ -524,4 +555,5 @@ async function pushWarnings(job, machine) {
 export function resetCheckouts() {
   jobs.clear();
   queues.clear();
+  installOutcomes.clear();
 }
