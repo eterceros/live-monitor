@@ -4,6 +4,7 @@ import Icon from './Icon.jsx';
 import { api } from '../api.js';
 import { useStrings } from '../i18n/useStrings.js';
 import { accountWarningText, accountLabel } from './ManageProjectsDialog.jsx';
+import { dismissOf } from '../projectMachines.js';
 
 /**
  * Importing a project: one obligatory field, the local checkout's path.
@@ -184,7 +185,8 @@ export default function ImportProjectDialog({ onClose, onImported, defaultAssign
   return (
     <Dialog
       title={t.topbar.more.importProject} icon="plus" className="import-project"
-      onDismiss={busy ? null : onClose}
+      // Once imported, any way out counts as imported.
+      onDismiss={dismissOf({ busy, imported, onClose, onImported })}
       footer={(
         <>
           <span className="modal-caption">{t.topbar.importProject.footerNote}</span>

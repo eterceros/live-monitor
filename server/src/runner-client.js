@@ -95,7 +95,8 @@ export const isRunnerOffline = (e) => e?.code === 'RUNNER_OFFLINE';
 /**
  * What the last call to each runner found: `{ online, reason, error, at }`.
  * `runnerEvents` fires `online` / `offline` on a change of mind only, so a box
- * that is down does not write a line per git command.
+ * that is down does not write a line per git command. `reachable` also fires on
+ * a runner's first answer ever.
  */
 const health = new Map();
 export const runnerEvents = new EventEmitter();
@@ -110,6 +111,9 @@ function noteHealth(name, online, { reason = null, error = null } = {}) {
   const was = health.get(name);
   const entry = { online, reason, error, at: new Date().toISOString() };
   health.set(name, entry);
+  // `reachable` also counts the first answer ever: whoever has work waiting for
+  // a runner needs that one too. Its listeners must not throw (we are inside `#fetch`).
+  if (online && was?.online !== true) runnerEvents.emit('reachable', { machine: name, ...entry });
   // Only a change of mind is news, and only in this direction for `online`:
   // the first call of the board's life answering is not a box «coming back».
   if (online ? was?.online !== false : was?.online === false) return;

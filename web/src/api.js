@@ -306,7 +306,8 @@ export const api = {
     if (!res.ok) throw Object.assign(new Error(data.error ?? res.statusText), { status: res.status, data });
     return data;
   },
-  // Putting a project on a runner (clone + install), and how that is going.
+  // Putting a project on a runner (clone + install), or installing its
+  // dependencies on the board's machine, and how that is going.
   prepareProject: (project, machine) => send(`/api/projects/${encodeURIComponent(project)}/machines/${encodeURIComponent(machine)}/prepare`),
   prepareStatus: async (project, machine) => {
     const res = await fetch(`/api/projects/${encodeURIComponent(project)}/machines/${encodeURIComponent(machine)}/prepare`, { headers: authHeaders() });
@@ -314,6 +315,12 @@ export const api = {
     if (!res.ok) throw Object.assign(new Error(data.error ?? res.statusText), { status: res.status, data });
     return data;
   },
+  // Each machine's copy of a project: clone state, whether the board clones it
+  // there unasked, and the remembered install answer.
+  projectMachines: (project) => get(`/api/projects/${encodeURIComponent(project)}/machines`),
+  retryClone: (project, machine) => send(`/api/projects/${encodeURIComponent(project)}/machines/${encodeURIComponent(machine)}/clone`),
+  // `{ autoClone?, install? }`; answers the machine's row.
+  setMachineOptions: (project, machine, options) => send(`/api/projects/${encodeURIComponent(project)}/machines/${encodeURIComponent(machine)}/options`, options),
   moveTask: (project, issue, body) => send(`${T(project, issue)}/move`, body),
   retryMove: (project, issue) => send(`${T(project, issue)}/move/retry`),
   discardMove: (project, issue) => send(`${T(project, issue)}/move/discard`),

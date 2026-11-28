@@ -834,6 +834,7 @@ test('mientras corre: sendChat contesta sin enviar, las acciones dan 409 y las r
     const blocked = await call('POST', '/api/projects/hfs/tasks/1/retry');
     assert.equal(blocked.status, 409);
     assert.equal(blocked.body.error, 'The board is updating');
+    assert.equal(blocked.body.code, 'upgrading', 'the install question tells this refusal apart by its code');
     assert.equal((await call('POST', '/api/settings', {})).status, 200, 'los ajustes siguen');
     assert.equal((await call('GET', '/api/upgrade')).status, 200);
     assert.equal((await call('POST', '/api/upgrade/cancel')).status, 409, 'ya no se cancela');

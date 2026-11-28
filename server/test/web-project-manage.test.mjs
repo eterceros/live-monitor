@@ -49,6 +49,89 @@ test('the dialog has the card grid, badges, the import button and the removal no
   assert.match(dialog, /x\.repoPath/);
 });
 
+test('each card shows its runners, with retry, exclusion and the way back to the install question', () => {
+  assert.match(dialog, /<CardMachines/);
+  assert.match(dialog, /api\.retryClone\(project, row\.machine\)/);
+  assert.match(dialog, /api\.setMachineOptions\(project, row\.machine, \{ autoClone \}\)/);
+  assert.match(dialog, /onInstall\?\.\(project\)/);
+});
+
+test('the install dialog asks per machine, refuses a local install over node_modules and scopes its promise', async () => {
+  const install = read('web/src/components/InstallDepsDialog.jsx');
+  assert.match(install, /<Dialog/);
+  assert.match(install, /local && !!row\.nodeModules/);
+  assert.match(install, /api\.setMachineOptions\(project, machine, \{ install: choice \}\)/);
+  assert.match(install, /if \(choice === 'yes'\) await api\.prepareProject\(project, machine\)/);
+  assert.match(install, /d\.scope/);
+  for (const l of LANGS) {
+    const { installDeps } = (await import(`../../web/src/i18n/strings/${l}.js`)).default.dialogs;
+    assert.match(installDeps.scope, /worktree/i, `${l}.installDeps.scope`);
+  }
+});
+
+test('App reopens the install question, asks it after an import and forwards checkout messages', () => {
+  const app = read('web/src/App.jsx');
+  assert.match(app, /checkout: \(msg\) => window\.dispatchEvent\(new CustomEvent\('board-checkout'/);
+  assert.match(app, /selectProject\(project\.id\);\s+setInstallFor\(project\.id\);/);
+  assert.match(app, /onInstall=\{setInstallFor\}/);
+  assert.match(app, /<InstallDepsDialog/);
+});
+
+const logic = () => import('../../web/src/projectMachines.js');
+const runnerRow = (over = {}) => ({
+  machine: 'devbox', kind: 'runner', reason: null, autoClone: true, present: true, deferred: false, install: 'yes',
+  job: { status: 'idle', step: null, error: null, code: null }, ...over,
+});
+const failedJob = (code = null) => ({ status: 'failed', step: null, error: 'boom', code });
+
+test('a saved yes can be run again, unless something else already covers it', async () => {
+  const { canRunAgain } = await logic();
+  assert.equal(canRunAgain(runnerRow()), true, 'nothing ran since the board started');
+  assert.equal(canRunAgain(runnerRow({ job: failedJob() })), true);
+  assert.equal(canRunAgain(runnerRow(), 'no'), false, 'an unsaved change goes through Save');
+  assert.equal(canRunAgain(runnerRow({ install: 'no' })), false);
+  assert.equal(canRunAgain(runnerRow({ install: null })), false);
+  for (const status of ['queued', 'running']) {
+    assert.equal(canRunAgain(runnerRow({ job: { status } })), false, status);
+  }
+  assert.equal(canRunAgain(runnerRow({ job: { status: 'done' }, installed: true, nodeModules: true })), false);
+  assert.equal(canRunAgain(runnerRow({ job: { status: 'done' }, installed: true, nodeModules: null })), false, 'unknown is not gone');
+  for (const kind of ['runner', 'local']) {
+    assert.equal(canRunAgain(runnerRow({ kind, job: { status: 'done' }, installed: true, nodeModules: false })), true, `${kind}: node_modules is gone`);
+  }
+  assert.equal(canRunAgain(runnerRow({ job: { status: 'done' }, installed: false })), true, 'it ended without installing');
+  assert.equal(canRunAgain(runnerRow({ kind: 'local', nodeModules: true })), false);
+  assert.equal(canRunAgain(runnerRow({ kind: 'local', nodeModules: false })), true);
+  const install = read('web/src/components/InstallDepsDialog.jsx');
+  assert.match(install, /retryable = canRunAgain\(row, draft\[row\.machine\]\)/);
+  assert.match(install, /onClick=\{\(\) => runAgain\(row\.machine\)\}/);
+});
+
+test('dismissing an import with warnings still counts as imported, so the install question follows', async () => {
+  const { dismissOf } = await logic();
+  const seen = [];
+  const handlers = { onClose: () => seen.push('closed'), onImported: (p) => seen.push(p.id) };
+  dismissOf({ busy: false, imported: { id: 'ehr' }, ...handlers })();
+  dismissOf({ busy: false, imported: null, ...handlers })();
+  assert.deepEqual(seen, ['ehr', 'closed']);
+  assert.equal(dismissOf({ busy: true, imported: null, ...handlers }), null);
+  assert.match(read('web/src/components/ImportProjectDialog.jsx'), /onDismiss=\{dismissOf\(\{ busy, imported, onClose, onImported \}\)\}/);
+});
+
+test('a card says «deferred» only of work the board will run again, and offers the retry otherwise', async () => {
+  const { cloneState, cloneActions } = await logic();
+  const s = (await cat('en')).manage.cloneState;
+  const deferred = runnerRow({ job: failedJob('upgrading'), deferred: true });
+  assert.equal(cloneState(s, deferred, true), s.deferred);
+  const byHand = runnerRow({ job: failedJob('upgrading'), reason: 'explicit_path' });
+  assert.equal(cloneState(s, byHand, true), s.failed.replace('{message}', 'boom'));
+  assert.deepEqual(cloneActions(byHand), { failed: true, byConvention: false, canClone: true, wraps: true });
+  assert.equal(cloneActions(runnerRow({ reason: 'explicit_path', present: false })).canClone, false);
+  assert.equal(cloneActions(runnerRow({ present: false })).canClone, true);
+  assert.equal(cloneActions(runnerRow()).canClone, false);
+  assert.equal(cloneState(s, runnerRow({ reason: 'default_project', present: false }), true), s.explicitPath);
+});
+
 test('the four catalogs carry the same new keys and holes', async () => {
   const es = await cat('es');
   for (const l of LANGS) {

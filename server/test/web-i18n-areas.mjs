@@ -37,7 +37,8 @@ export const AREAS = {
   ops: ['components/UpgradeDialog.jsx', 'components/RestartControl.jsx', 'components/MoveDialog.jsx',
     'restartOutcome.js'],
   dialogs: ['components/CloseIssueDialog.jsx', 'components/CreateTaskDialog.jsx',
-    'components/ModelsDialog.jsx', 'components/ReviewerDialog.jsx', 'components/PrTitleDialog.jsx'],
+    'components/ModelsDialog.jsx', 'components/ReviewerDialog.jsx', 'components/PrTitleDialog.jsx',
+    'components/InstallDepsDialog.jsx'],
   viewer: ['viewer/'],
 };
 

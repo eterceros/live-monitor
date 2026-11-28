@@ -534,3 +534,46 @@ test('a removed project can be added again under the same id', async () => {
   assert.deepEqual(listProjects().map((p) => p.id), ['gamma', 'beta']);
   rmSync(FILE, { force: true });
 });
+
+// --- per-machine choices -------------------------------------------------------
+
+test('per-machine choices are validated, stored only when they say something, and survive a reload', async () => {
+  const first = await withProjectsFile(undefined);
+  await capturingLog(async () => first.saveProjects([entry({ id: 'beta' }), entry({ id: 'cat' })]));
+  assert.equal(Object.hasOwn(first.projectOf('cat'), 'machines'), false);
+  assert.deepEqual(first.machineOptionsOf('cat', 'devbox'), { autoClone: true, install: null });
+  assert.deepEqual(first.machineOptionsOf('cat', 'constructor'), { autoClone: true, install: null });
+
+  const before = first.projectOf('cat');
+  await capturingLog(async () => {
+    first.setMachineAutoClone('cat', 'devbox', false);
+    first.setInstallChoice('cat', 'devbox', 'yes');
+    first.setInstallChoice('cat', 'local', 'no');
+  });
+  assert.equal(Object.hasOwn(before, 'machines'), false, 'an entry already handed out is not edited');
+  const expected = { devbox: { autoClone: false, install: 'yes' }, local: { install: 'no' } };
+  assert.deepEqual(JSON.parse(readFileSync(FILE, 'utf8'))[1].machines, expected);
+
+  seq += 1;
+  const again = await import(`../src/projects.js?case=${seq}`);
+  assert.deepEqual(again.projectOf('cat').machines, expected);
+  assert.deepEqual(again.machineOptionsOf('cat', 'devbox'), { autoClone: false, install: 'yes' });
+  assert.deepEqual(again.machineOptionsOf('beta', 'devbox'), { autoClone: true, install: null });
+
+  await capturingLog(async () => {
+    again.setMachineAutoClone('cat', 'devbox', true);
+    again.setInstallChoice('cat', 'devbox', null);
+    again.setInstallChoice('cat', 'local', null);
+  });
+  assert.equal(Object.hasOwn(JSON.parse(readFileSync(FILE, 'utf8'))[1], 'machines'), false, 'back to the defaults, no field');
+
+  assert.throws(() => again.setMachineAutoClone('nobody', 'devbox', false), /no project is registered as/);
+  assert.throws(() => again.setMachineAutoClone('cat', 'devbox', 'no'), /true or false/);
+  assert.throws(() => again.setMachineAutoClone('cat', '', false), /machine name/);
+  assert.throws(() => again.setInstallChoice('cat', 'devbox', 'maybe'), /"yes", "no" or null/);
+  assert.throws(() => again.setInstallChoice('cat', '__proto__', 'yes'), /machine name/);
+  for (const bad of [[], 'x', { devbox: 'yes' }, { devbox: { autoClone: 'no' } }, { devbox: { install: true } }]) {
+    assert.throws(() => again.saveProjects([entry({ machines: bad })]), /\.machines/, JSON.stringify(bad));
+  }
+  rmSync(FILE, { force: true });
+});
