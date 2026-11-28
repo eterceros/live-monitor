@@ -1,7 +1,8 @@
 import React from 'react';
 import Dialog from './Dialog.jsx';
 import Icon from './Icon.jsx';
-import { hostsProject, isBusy, useProjectMachines } from './InstallDepsDialog.jsx';
+import { useProjectMachines } from './InstallDepsDialog.jsx';
+import { hostsProject, cloneState, cloneActions } from '../projectMachines.js';
 import { useStrings } from '../i18n/useStrings.js';
 import { api } from '../api.js';
 import { fill } from '../i18n/index.js';
@@ -23,23 +24,6 @@ export function accountWarningText(t, w) {
   const template = w && t.topbar.manage.accountWarning[w.code];
   if (template) return fill(template, w);
   return typeof w === 'string' ? w : String(w?.message ?? '');
-}
-
-/**
- * One line saying how a runner's copy of the project stands. A job in progress
- * or failed says more than what is on disk.
- */
-function cloneState(s, row, online) {
-  const { job } = row;
-  if (job?.status === 'queued') return s.queued;
-  if (isBusy(job)) return job.step === 'install' ? s.installing : s.cloning;
-  // Put off by a board upgrade: the board tries again on its own.
-  if (job?.status === 'failed') return job.code === 'upgrading' ? s.deferred : fill(s.failed, { message: job.error });
-  if (online === false || row.reason === 'home_unknown') return s.unreachable;
-  if (row.present) return s.cloned;
-  if (row.autoClone === false) return s.excluded;
-  if (row.reason === 'explicit_path') return s.explicitPath;
-  return s.notCloned;
 }
 
 /**
@@ -73,12 +57,7 @@ function CardMachines({ project, name, hasRunners, machineStatus, onInstall }) {
       {runners.map((row) => {
         const online = machineStatus[row.machine]?.online;
         const state = cloneState(m.cloneState, row, online);
-        const failed = row.job?.status === 'failed';
-        // A path written in the config is never cloned from here.
-        const byConvention = row.reason !== 'explicit_path' && row.reason !== 'default_project';
-        const canClone = byConvention && !isBusy(row.job) && (failed || !row.present);
-        // A failure carries the server's message: it wraps, never truncates.
-        const wraps = failed && row.job.code !== 'upgrading';
+        const { failed, byConvention, canClone, wraps } = cloneActions(row);
         return (
           <div key={row.machine}>
             <dl className="pm-fields">
@@ -88,9 +67,9 @@ function CardMachines({ project, name, hasRunners, machineStatus, onInstall }) {
               </div>
             </dl>
             {wraps && <p className="pm-account-note" aria-live="polite">{state}</p>}
-            {byConvention && (
+            {(byConvention || canClone) && (
               <div className="pm-card-actions">
-                <label className="pm-field">
+                {byConvention && <label className="pm-field">
                   <input
                     type="checkbox" checked={row.autoClone !== false} disabled={!!pending[row.machine]}
                     aria-label={`${m.cloneAuto}: ${row.machine}`}
@@ -100,7 +79,7 @@ function CardMachines({ project, name, hasRunners, machineStatus, onInstall }) {
                     }}
                   />
                   {m.cloneAuto}
-                </label>
+                </label>}
                 {canClone && (
                   <button type="button" className="btn btn-sm" disabled={!!pending[row.machine]}
                     aria-label={`${failed ? t.common.retry : m.cloneNow}: ${row.machine}`}
@@ -124,7 +103,9 @@ function CardMachines({ project, name, hasRunners, machineStatus, onInstall }) {
 /**
  * Every project the board knows, as a responsive grid of cards: open it,
  * restrict or unrestrict it, change the GitHub account it works as, take it off
- * the board. Importing a new one is the header button. Nothing is confirmed
+ * the board. Each card also shows the project on every runner (clone state,
+ * clone or retry, exclusion from automatic cloning) and reopens the question
+ * about installing dependencies. Importing a new one is the header button. Nothing is confirmed
  * here: `onRemove(project)` belongs to the caller, which asks.
  *
  * @param {object} props

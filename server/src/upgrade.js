@@ -391,8 +391,9 @@ export function idleReasons() {
       if (live) reasons.push({ project: holder.project, issue: null, text: `${where}: «${chat.title}» está en marcha`, machine: holder.machine });
     }
   }
-  // A clone or a Prepare, running or queued: a restarted runner would cut it.
-  // It may belong to no task (Prepare) and to no live chat turn.
+  // A clone, a Prepare or a local install, running or queued: restarting the
+  // runner, or the board for a local one, would cut it. It may belong to no task
+  // and to no live chat turn (Prepare, background cloning).
   for (const job of checkoutsBusy()) {
     let text = `preparing ${job.repo} on ${job.machine} (${job.step})`;
     if (job.status === 'queued') text = `${job.repo} is waiting for its checkout on ${job.machine}`;

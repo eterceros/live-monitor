@@ -249,6 +249,9 @@ export function tasksFileOf(projectId) {
  * @property {Object} overrides    per-project config overrides; `{}` when there are none.
  * @property {boolean} [restricted] `true` groups the project apart on the board and keeps it from being the opening project; absent means not restricted.
  * @property {boolean} [design]    `false` keeps the board's UX plugin out of this project's attended chats; absent means on.
+ * @property {Object<string, {autoClone?: false, install?: 'yes'|'no'}>} [machines]
+ *   per-machine choices, by machine name: excluded from background cloning, and
+ *   the remembered answer about installing dependencies.
  */
 
 /**

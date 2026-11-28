@@ -95,7 +95,8 @@ export const isRunnerOffline = (e) => e?.code === 'RUNNER_OFFLINE';
 /**
  * What the last call to each runner found: `{ online, reason, error, at }`.
  * `runnerEvents` fires `online` / `offline` on a change of mind only, so a box
- * that is down does not write a line per git command.
+ * that is down does not write a line per git command. `reachable` also fires on
+ * a runner's first answer ever.
  */
 const health = new Map();
 export const runnerEvents = new EventEmitter();

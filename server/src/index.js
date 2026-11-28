@@ -1206,7 +1206,8 @@ app.get('/api/machines', async (_req, res) => {
   }
 });
 
-// «Prepare»: put a registered project on a runner (clone, worktree root, install).
+// «Prepare»: put a registered project on a runner (clone, worktree root, install);
+// on the board's own machine, only install its dependencies.
 // Nothing but the two ids comes from the request; see prepare.js for why.
 app.get('/api/projects/:project/machines/:machine/prepare', (req, res) => {
   res.json(prepareStatus(req.params.machine, req.params.project));

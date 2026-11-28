@@ -162,6 +162,7 @@ p.pm-account-note { padding-left: 0; color: var(--danger-fg); }
 .pm-install-deps fieldset { margin: 0 0 10px; padding: 8px 12px; border: 1px solid var(--card-border); border-radius: var(--r-md); }
 .pm-install-deps fieldset label { margin-right: 12px; cursor: pointer; }
 .pm-install-deps .modal-body .modal-caption { max-width: none; }
+.pm-install-deps .spinner { display: inline-block; margin-right: 4px; vertical-align: middle; }
 
 @media (max-width: 780px) {
   .pm-panel { min-width: 0; }

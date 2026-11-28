@@ -4,6 +4,7 @@ import { config, configEvents } from './config.js';
 import { runnerEvents, runnerHealth } from './runner-client.js';
 import {
   ensureCheckout, checkoutStatus, checkoutHooks, backgroundEligible, projectRepo, CheckoutError,
+  checkoutWasReady, forgetCheckout,
 } from './checkout.js';
 import { startPrepare, dependenciesMissing } from './prepare.js';
 
@@ -20,9 +21,12 @@ import { startPrepare, dependenciesMissing } from './prepare.js';
  * Jobs live in memory, so after a board restart an accepted install is still
  * owed when the checkout has a lockfile and no `node_modules`.
  *
- * A failed clone is tried again when its runner becomes reachable, when a sweep
- * is asked for (an import) or by hand; never by the timer, except one that only
- * failed because the board was updating.
+ * What it starts is checked again at its turn in the queue (`stillWanted`).
+ *
+ * A failed clone is tried again when its runner becomes reachable or its config
+ * is edited, when a sweep is asked for (an import, a runner taken back in) or by
+ * hand; never by the timer, except one the board's update put off
+ * (`retriesAfterUpgrade`).
  */
 
 export const bgCloneHooks = {
@@ -37,10 +41,25 @@ const unfinished = (job) => job.status === 'queued' || job.status === 'running';
 const runnerNames = () => Object.entries(machines()).filter(([, m]) => m.kind === 'runner').map(([name]) => name);
 const complain = (what, e) => console.error(`[bgclone] ${what}: ${e.message}`);
 
+/**
+ * What is asked again when a job this started reaches its turn: the project may
+ * have been removed or moved, the runner excluded, or the install answer changed.
+ */
+function stillWantedOf(machine, project, repoPath) {
+  const clone = () => {
+    const { eligible, reason } = backgroundEligible(machine, project);
+    // A runner that stopped answering is left for the clone itself to report.
+    if (!eligible) return reason === 'home_unknown';
+    return machineFor(machine, project).repoPath === repoPath;
+  };
+  return { clone, install: () => clone() && machineOptionsOf(project, machine).install === 'yes' };
+}
+
 /** Starts the job and does not wait for it; how it ends is read from its status. */
-function launch(machine, project) {
+function launch(machine, project, repoPath) {
+  const stillWanted = stillWantedOf(machine, project, repoPath);
   if (machineOptionsOf(project, machine).install === 'yes') {
-    startPrepare(machine, project).catch((e) => {
+    startPrepare(machine, project, { stillWanted }).catch((e) => {
       // Refused before there was a job (409: the board started updating): owed.
       if (e.status === 409) swept.delete(machine);
       else complain(`${project} on ${machine}`, e);
@@ -48,7 +67,18 @@ function launch(machine, project) {
     return;
   }
   // The job records its own failure.
-  ensureCheckout(machine, project).catch(() => {});
+  ensureCheckout(machine, project, { stillWanted }).catch(() => {});
+}
+
+/**
+ * Whether the sweep will itself run again what the board's update put off: an
+ * eligible pair that still lacks its clone, or an accepted install. Anything
+ * else is only retried by hand.
+ */
+function retriesAfterUpgrade(machine, project) {
+  return checkoutStatus(machine, project).code === 'upgrading'
+    && backgroundEligible(machine, project).eligible
+    && (!checkoutWasReady(machine, project) || machineOptionsOf(project, machine).install === 'yes');
 }
 
 /** Whether this pair is to be started now, leaving aside what is on the runner's disk. */
@@ -56,7 +86,7 @@ function wanted(machine, project, retryFailed) {
   if (!backgroundEligible(machine, project).eligible) return false;
   const job = checkoutStatus(machine, project);
   if (unfinished(job)) return false;
-  return retryFailed || job.status !== 'failed' || job.code === 'upgrading';
+  return retryFailed || job.status !== 'failed' || retriesAfterUpgrade(machine, project);
 }
 
 /**
@@ -84,14 +114,18 @@ async function sweepRunner(name, projects, { retryFailed, complete }) {
       const base = machines()[name];
       const machine = machineFor(name, project);
       const present = await base.fs.exists(machine.repoPath);
-      if (present && !await installOwed(name, project, machine)) continue;
+      if (present && !await installOwed(name, project, machine)) {
+        // A clone the update put off, there by now: nothing is left to run.
+        if (retriesAfterUpgrade(name, project) && !checkoutWasReady(name, project)) forgetCheckout(name, project);
+        continue;
+      }
       // All of this may have changed while the runner was being asked.
       if (checkoutHooks.holdsNewWork()) {
         putOff = true;
         break;
       }
       if (!wanted(name, project, retryFailed)) continue;
-      launch(name, project);
+      launch(name, project, machine.repoPath);
       started.push({ machine: name, project });
     }
   } catch (e) {
@@ -137,8 +171,7 @@ async function probeAndSweep(name, { retryFailed }) {
   await sweep(name, undefined, { retryFailed });
 }
 
-const owesUpgradeRetry = (name) => listProjects()
-  .some((p) => checkoutStatus(name, p.id).code === 'upgrading' && backgroundEligible(name, p.id).eligible);
+const owesUpgradeRetry = (name) => listProjects().some((p) => retriesAfterUpgrade(name, p.id));
 
 /**
  * One turn of the fallback timer, for a board with no browser open: nothing
@@ -244,6 +277,8 @@ async function rowOf(projectId, name) {
     autoClone,
     present,
     job: { status: job.status, step: job.step, error: job.error, code: job.code ?? null },
+    // Whether what the update put off will run without anyone asking.
+    deferred: retriesAfterUpgrade(name, projectId) && !(present && install !== 'yes' && !checkoutWasReady(name, projectId)),
     install,
     ...(local ? { nodeModules } : {}),
   };

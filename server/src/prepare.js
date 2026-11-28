@@ -19,9 +19,10 @@ import { ensureCheckout, checkoutStatus, checkoutsBusy, checkoutHooks, projectRe
  * command is one of a few fixed strings picked by which lockfile the checkout
  * has, and the arguments go through `exec`, never through a shell string.
  *
- * Safe to repeat: an existing checkout is checked and fetched, not cloned
- * again; a board restart that cuts a run off just leaves the next run to finish
- * it.
+ * Safe to repeat on a runner: an existing checkout is checked and fetched, not
+ * cloned again, so after a board restart cuts a run off the next run finishes
+ * it. Not so for a local install cut off once `node_modules` is there: the next
+ * run is refused (see below) until that folder is removed.
  *
  * On the board's own machine there is nothing to clone and no worktree root to
  * make: it only installs the dependencies of the project's checkout, and only
@@ -50,7 +51,8 @@ const POSIX_INSTALLERS = [
   {
     file: 'pnpm-lock.yaml',
     label: 'pnpm',
-    // corepack ships with Node and reads `packageManager`; the user-level dir needs no sudo.
+    // Where pnpm is missing this relies on corepack, which newer Node releases no
+    // longer ship; it reads `packageManager`, and the user-level dir needs no sudo.
     command: 'command -v pnpm >/dev/null 2>&1 || corepack enable --install-directory "$HOME/.local/bin"; '
       + 'export PATH="$HOME/.local/bin:$PATH"; pnpm install --frozen-lockfile',
   },
@@ -108,12 +110,14 @@ const inFlight = (machineName, projectId) => checkoutsBusy().some((j) => j.machi
  * chat or a task started gets the install chained to it); its clone and its
  * install wait for those of other projects on the same machine.
  *
+ * @param {object} [options]
+ * @param {object} [options.stillWanted] see `ensureCheckout`; only background cloning passes it.
  * @returns {Promise<object>} the state right after starting; the run goes on in the background.
  * @throws {PrepareError} unknown machine or project, board updating; on a runner, no GitHub repo
  *   or no known path yet; on the board's machine, no checkout (`repo_path_missing`) or a
  *   `node_modules` already there (`node_modules_exists`).
  */
-export async function startPrepare(machineName, projectId) {
+export async function startPrepare(machineName, projectId, { stillWanted } = {}) {
   const base = machines()[machineName];
   if (!base) throw new PrepareError(`There is no machine "${machineName}" in config.machines`, 404);
   const local = base.kind === 'local';
@@ -146,7 +150,7 @@ export async function startPrepare(machineName, projectId) {
 
   // The job is registered before the promise comes back; how it ends is read
   // from its status.
-  ensureCheckout(machineName, projectId, { install }).catch(() => {});
+  ensureCheckout(machineName, projectId, { install, stillWanted }).catch(() => {});
   return prepareStatus(machineName, projectId);
 }
 

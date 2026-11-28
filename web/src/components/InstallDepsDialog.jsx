@@ -3,12 +3,7 @@ import Dialog from './Dialog.jsx';
 import { useStrings } from '../i18n/useStrings.js';
 import { api } from '../api.js';
 import { fill } from '../i18n/index.js';
-
-/** A clone or install waiting its turn on the machine is as unfinished as a running one. */
-export const isBusy = (job) => job?.status === 'queued' || job?.status === 'running';
-
-/** A machine the project can live on: a runner with the convention off and no path of its own is not one. */
-export const hostsProject = (row) => row.kind === 'local' || !['projects_root_off', 'no_repo'].includes(row.reason);
+import { isBusy, hostsProject, canRunAgain } from '../projectMachines.js';
 
 /**
  * The per-machine rows of one project (`GET /api/projects/:p/machines`), kept
@@ -155,8 +150,7 @@ export default function InstallDepsDialog({ project, name, onClose }) {
         const refused = local && !!row.nodeModules;
         const choice = draft[row.machine] ?? row.install ?? null;
         const failed = row.job?.status === 'failed';
-        const retryable = row.install === 'yes' && !draft[row.machine] && !busy && !refused
-          && (failed || row.job?.status === 'idle');
+        const retryable = canRunAgain(row, draft[row.machine]);
         const label = local ? fill(d.boardMachine, { machine: row.machine }) : row.machine;
         const option = (value, text, disabled) => (
           <label>

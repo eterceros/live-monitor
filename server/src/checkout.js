@@ -214,6 +214,38 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+/** True when this pair's last job got as far as having the checkout there. */
+export function checkoutWasReady(machineName, projectId) {
+  return jobs.get(keyOf(machineName, projectId))?.checkoutReady === true;
+}
+
+/** Drops a finished job whose outcome no longer says anything; a running one stays. */
+export function forgetCheckout(machineName, projectId) {
+  const key = keyOf(machineName, projectId);
+  const job = jobs.get(key);
+  if (!job || unfinished(job)) return;
+  jobs.delete(key);
+  update(job, { status: 'idle', step: null, error: null, code: null });
+}
+
+/** Thrown inside a job nobody wants any more; it never reaches a caller. */
+const CANCELLED = Symbol('cancelled');
+
+/**
+ * At a queued job's turn to clone: gives it up when only the board's own
+ * initiative asked for it and that no longer wants it.
+ */
+async function dropIfUnwanted(job) {
+  if (job.asked) return;
+  // A config reload while this waited forgets the runner's `~`.
+  await ensureHome(job.machine).catch(() => {});
+  // No `await` from here to the removal: a caller joining now either counts or
+  // gets a job of its own.
+  if (job.asked || job.stillWanted.clone()) return;
+  jobs.delete(keyOf(job.machine, job.project));
+  throw CANCELLED;
+}
+
 /**
  * Makes sure the checkout of a project is on a machine, cloning it if missing.
  * Does not create the worktree root. The job is registered before this returns
@@ -234,9 +266,14 @@ function deferred() {
  * @param {(machine, tools: {push: Function, setStep: Function}) => Promise<void>} [options.install]
  *   runs on the queue once the checkout is ready. Only the callers that pass one
  *   wait for it (and see it fail); the others are answered at "ready".
- * @returns {Promise<{cloned: boolean, warnings: string[]}>}
+ * @param {{clone: () => boolean, install: () => boolean}} [options.stillWanted]
+ *   passed by a caller nobody asked (background cloning). While only such
+ *   callers hold a job, both are asked again at its turn in the queue: the clone
+ *   is given up, or the install skipped, when the answer is no. A caller without
+ *   it makes what it asks for unconditional.
+ * @returns {Promise<{cloned: boolean, warnings: string[], cancelled?: boolean}>}
  */
-export async function ensureCheckout(machineName, projectId, { onLine, install } = {}) {
+export async function ensureCheckout(machineName, projectId, { onLine, install, stillWanted } = {}) {
   const base = machines()[machineName];
   if (!base) throw new CheckoutError(`There is no machine "${machineName}" in config.machines`, 'unknown_machine', 404);
   const local = base.kind === 'local';
@@ -260,10 +297,17 @@ export async function ensureCheckout(machineName, projectId, { onLine, install }
       machine: machineName, project: projectId, repo, local,
       status: 'running', step: local ? 'install' : 'clone', lines: [], error: null, code: null,
       listeners: new Set(), install: null, ready: deferred(), done: deferred(),
+      asked: false, installAsked: false, stillWanted: null, checkoutReady: false,
     };
     jobs.set(key, job);
   }
   if (install) job.install ??= install;
+  if (stillWanted) {
+    job.stillWanted ??= stillWanted;
+  } else {
+    job.asked = true;
+    if (install) job.installAsked = true;
+  }
   if (fresh) update(job);
 
   if (onLine) {
@@ -305,10 +349,13 @@ async function runJob(job) {
     const { machine, result } = job.local
       ? { machine: machineFor(job.machine, job.project), result: { cloned: false, warnings: [] } }
       : await bringCheckout(job);
+    job.checkoutReady = true;
     job.ready.resolve(result);
     // Read only now: a caller that wants an install may have joined meanwhile.
     if (job.install) {
       await inMachineTurn(job, async () => {
+        // The answer may have changed while this waited.
+        if (!job.installAsked && !job.stillWanted.install()) return;
         assertNotUpgrading();
         await job.install(machine, {
           push: (line) => push(job, line),
@@ -320,6 +367,13 @@ async function runJob(job) {
     update(job, { status: 'done', step: null });
     job.done.resolve(result);
   } catch (raw) {
+    if (raw === CANCELLED) {
+      update(job, { status: 'idle', step: null });
+      const result = { cloned: false, warnings: [], cancelled: true };
+      job.ready.resolve(result);
+      job.done.resolve(result);
+      return;
+    }
     const e = raw?.code === 'RUNNER_OFFLINE'
       ? new CheckoutError(`Runner "${job.machine}" is unreachable: ${raw.message}`, 'runner_unreachable', 502)
       : raw;
@@ -400,6 +454,7 @@ async function bringCheckout(job) {
       );
     }
     cloned = await inMachineTurn(job, async () => {
+      await dropIfUnwanted(job);
       update(job, { step: 'clone' });
       // Looked at again: it may have appeared while this waited.
       if (await machine.fs.exists(repoPath)) {

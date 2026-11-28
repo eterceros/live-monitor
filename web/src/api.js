@@ -306,7 +306,8 @@ export const api = {
     if (!res.ok) throw Object.assign(new Error(data.error ?? res.statusText), { status: res.status, data });
     return data;
   },
-  // Putting a project on a runner (clone + install), and how that is going.
+  // Putting a project on a runner (clone + install), or installing its
+  // dependencies on the board's machine, and how that is going.
   prepareProject: (project, machine) => send(`/api/projects/${encodeURIComponent(project)}/machines/${encodeURIComponent(machine)}/prepare`),
   prepareStatus: async (project, machine) => {
     const res = await fetch(`/api/projects/${encodeURIComponent(project)}/machines/${encodeURIComponent(machine)}/prepare`, { headers: authHeaders() });
