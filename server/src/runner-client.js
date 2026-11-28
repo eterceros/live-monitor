@@ -446,11 +446,16 @@ class RemoteDaemons {
  * `stdin` it writes to, `stdout` it reads from, `kill`, and `exit`/`error`
  * events. Everything the SDK sends becomes a `{stdin}` frame; every
  * `{stdout}` frame is pushed into the readable, byte for byte.
+ *
+ * An exit always carries a code or a signal, as a child process's does. With
+ * neither, the SDK takes the process for still running and waits for an `exit`
+ * that was already emitted: the session never ends, and prompts go nowhere.
  */
 class RemoteProcess extends EventEmitter {
   killed = false;
   exitCode = null;
   signalCode = null;
+  #killSignal = null;
 
   constructor(socket, signal) {
     super();
@@ -460,7 +465,8 @@ class RemoteProcess extends EventEmitter {
       write: (chunk, _enc, cb) => {
         const text = chunk.toString('utf8');
         if (socket.readyState === WebSocket.OPEN) { socket.send(JSON.stringify({ stdin: text }), cb); }
-        else socket.once('open', () => socket.send(JSON.stringify({ stdin: text }), cb));
+        else if (socket.readyState === WebSocket.CONNECTING) socket.once('open', () => socket.send(JSON.stringify({ stdin: text }), cb));
+        else cb();   // the connection is over, and so is the process: `exit` says it
       },
       final: (cb) => { this.#send({ end: true }); cb(); },
     });
@@ -468,10 +474,14 @@ class RemoteProcess extends EventEmitter {
     const finish = (code, sig) => {
       if (exited) return;
       exited = true;
-      this.exitCode = code;
-      this.signalCode = sig ?? null;
+      // Neither one: the connection closed before the runner said how the
+      // process ended (a restart, a crash). Ending it that way is our signal if
+      // we had asked for it, and a failure if not.
+      const lost = code == null && !sig;
+      this.exitCode = lost ? (this.killed ? null : 1) : code;
+      this.signalCode = lost ? (this.killed ? this.#killSignal : null) : (sig ?? null);
       this.stdout.push(null);
-      this.emit('exit', code, sig ?? null);
+      this.emit('exit', this.exitCode, this.signalCode);
     };
     socket.on('message', (raw) => {
       let msg;
@@ -492,6 +502,7 @@ class RemoteProcess extends EventEmitter {
 
   kill(sig = 'SIGTERM') {
     this.killed = true;
+    this.#killSignal = sig;
     this.#send({ kill: sig });
     return true;
   }
