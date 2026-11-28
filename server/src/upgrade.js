@@ -1805,5 +1805,5 @@ export function upgradeGuard(req, res, next) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || !upgradeRunning()) return next();
   const p = String(req.path ?? '').toLowerCase().replace(/\/{2,}/g, '/');
   if (GUARD_EXEMPT.test(p)) return next();
-  return res.status(409).json({ error: 'The board is updating', job: currentJob() });
+  return res.status(409).json({ error: 'The board is updating', code: 'upgrading', job: currentJob() });
 }

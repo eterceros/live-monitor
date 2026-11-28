@@ -4,6 +4,7 @@ import Board from './components/Board.jsx';
 import NoProjectState from './components/NoProjectState.jsx';
 import ImportProjectDialog from './components/ImportProjectDialog.jsx';
 import ManageProjectsDialog from './components/ManageProjectsDialog.jsx';
+import InstallDepsDialog from './components/InstallDepsDialog.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import DemoPanel from './components/DemoPanel.jsx';
 import BrowserQaPanel from './components/BrowserQaPanel.jsx';
@@ -140,6 +141,7 @@ export default function App() {
   // The project dialogs live here: the empty state, the bar and the manager all open them.
   const [importOpen, setImportOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
+  const [installFor, setInstallFor] = useState(null); // project id
   const [crView, setCrView] = useState(null);   // { issue, reviewId }
   const [pollStarting, setPollStarting] = useState(false); // between the click and the first answer
   const [refreshingGit, setRefreshingGit] = useState(false);
@@ -236,6 +238,7 @@ export default function App() {
       usage: (msg) => setUsage(msg.usage ?? null),
       login: (msg) => window.dispatchEvent(new CustomEvent('board-login', { detail: msg })),
       plugins: (msg) => window.dispatchEvent(new CustomEvent('board-plugins', { detail: msg })),
+      checkout: (msg) => window.dispatchEvent(new CustomEvent('board-checkout', { detail: msg })),
       settings: (msg) => {
         setSettings(msg.settings);
         // The offer's answers from another device (`skipped`, `seen`) land at once.
@@ -487,6 +490,7 @@ export default function App() {
     if (!project?.id) return;
     setProjects((list) => (list.some((p) => p.id === project.id) ? list : [...list, project]));
     selectProject(project.id);
+    setInstallFor(project.id);
     // And then the registry as the server has it, in case it filled in more.
     api.projects()
       .then((r) => { const list = Array.isArray(r) ? r : r?.projects; if (Array.isArray(list)) setProjects(list); })
@@ -1203,7 +1207,12 @@ export default function App() {
           projects={projects} activeProject={activeProject} onClose={() => setManageOpen(false)}
           onImport={() => setImportOpen(true)} onSelect={selectProject}
           onToggleRestricted={toggleRestricted} onRemove={removeProject}
+          machines={machines} machineStatus={machineStatus} onInstall={setInstallFor}
         />
+      )}
+      {/* After the manager, so it opens on top of it. */}
+      {installFor && (
+        <InstallDepsDialog key={installFor} project={installFor} name={projectName(installFor)} onClose={() => setInstallFor(null)} />
       )}
       {metricsOpen && <MetricsDialog project={activeProject} onClose={() => setMetricsOpen(false)} />}
 

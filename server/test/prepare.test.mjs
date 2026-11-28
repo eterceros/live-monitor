@@ -2,12 +2,17 @@ import './isolate.mjs';   // primero: aisla el directorio de datos
 import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 
 import { config } from '../src/config.js';
-import { saveProjects } from '../src/projects.js';
-import { registerRunnerClient } from '../src/machine.js';
+import { saveProjects, listProjects } from '../src/projects.js';
+import { machines, registerRunnerClient } from '../src/machine.js';
 import { startPrepare, prepareStatus, resetPrepare, PrepareError } from '../src/prepare.js';
 import { checkoutHooks, ensureCheckout } from '../src/checkout.js';
+import { tempDir } from './teardown.mjs';
+
+// Checkouts on the board's own machine, with real files.
+const here = tempDir('hfsmon-prepare-');
 
 const saved = config.machines;
 after(() => {
@@ -21,6 +26,7 @@ saveProjects([
   { id: 'ehr', name: 'EHR', ...who, repo: 'eterceros/EHR', repoPath: 'C:/Users/edson/src/EHR', worktreeRoot: 'C:/Users/edson/src/EHR-wt' },
   { id: 'notes', name: 'notes', ...who, repo: 'eterceros/notes', repoPath: 'C:/Users/edson/src/notes', worktreeRoot: 'C:/Users/edson/src/notes-wt' },
   { id: 'norepo', name: 'norepo', ...who, repo: null, repoPath: 'C:/Users/edson/src/norepo', worktreeRoot: 'C:/Users/edson/src/norepo-wt' },
+  { id: 'gone', name: 'gone', ...who, repo: null, repoPath: path.join(here, 'gone'), worktreeRoot: path.join(here, 'gone-wt') },
 ]);
 
 /**
@@ -215,11 +221,130 @@ test('Prepare is refused while the board is updating', async () => {
   }
 });
 
-test('refusals: this board\'s own machine, an unknown machine or project, and a project without a GitHub repo', async () => {
+test('refusals: an unknown machine or project, and a runner project without a GitHub repo', async () => {
   useBox(fakeBox());
-  await assert.rejects(() => startPrepare('local', 'ehr'), (e) => e.status === 400 && /nothing to prepare/.test(e.message));
   await assert.rejects(() => startPrepare('nowhere', 'ehr'), (e) => e.status === 404);
   await assert.rejects(() => startPrepare('devbox', 'ghost'), (e) => e.status === 404);
   await assert.rejects(() => startPrepare('devbox', 'norepo'), (e) => e.status === 400 && /no GitHub repository/.test(e.message));
   assert.deepEqual(prepareStatus('devbox', 'ehr'), { status: 'idle', step: null, lines: [], error: null });
+});
+
+/**
+ * The board's own machine over a fresh checkout in `here`, with the shell and
+ * `where` replaced: nothing is really installed.
+ */
+function useLocal({ lockfile = 'package-lock.json', platform = process.platform, pnpm = true } = {}) {
+  const repo = tempDir('hfsmon-prepare-repo-');
+  if (lockfile) writeFileSync(path.join(repo, lockfile), '');
+  saveProjects([...listProjects().filter((p) => p.id !== 'here'),
+    { id: 'here', name: 'here', ...who, repo: null, repoPath: repo, worktreeRoot: `${repo}-wt` }]);
+  config.machines = {};
+  registerRunnerClient(() => { throw new Error('no runner here'); });   // also drops the cached machines
+  const calls = [];
+  const ok = { ok: true, code: 0, stdout: '', stderr: '' };
+  Object.assign(machines().local, {
+    platform,
+    shell: async (command, opts) => { calls.push(['shell', command, opts.cwd]); return ok; },
+    exec: async (file, args) => { calls.push([file, ...args]); return pnpm ? ok : { ...ok, ok: false, code: 1 }; },
+  });
+  return { repo, calls };
+}
+
+test('the machine of the board only installs: no clone, no worktree root, no repository needed', async () => {
+  const { repo, calls } = useLocal();
+  assert.ok(live(await startPrepare('local', 'here')));
+  const end = await finished('local', 'here');
+  assert.equal(end.status, 'done', end.error);
+  assert.deepEqual(calls, [['shell', 'npm ci --no-audit --no-fund', repo]]);
+  assert.ok(!existsSync(`${repo}-wt`));
+});
+
+test('a local install is refused when node_modules exists, or there is no checkout', async () => {
+  const { repo, calls } = useLocal();
+  mkdirSync(path.join(repo, 'node_modules'));
+  await assert.rejects(() => startPrepare('local', 'here'),
+    (e) => e instanceof PrepareError && e.status === 409 && e.code === 'node_modules_exists');
+  await assert.rejects(() => startPrepare('local', 'gone'), (e) => e.status === 400 && e.code === 'repo_path_missing');
+  assert.equal(calls.length, 0);
+  assert.equal(prepareStatus('local', 'here').status, 'idle');
+});
+
+test('node_modules that appears after the request fails the run before installing', async () => {
+  const { repo, calls } = useLocal();
+  const local = machines().local;
+  // It appears while the job is looking for the lockfile, before its second look.
+  const real = local.fs;
+  local.fs = {
+    exists: async (p) => {
+      if (p.endsWith('package-lock.json')) mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+      return real.exists(p);
+    },
+  };
+  await startPrepare('local', 'here');
+  const end = await finished('local', 'here');
+  assert.equal(end.status, 'failed');
+  assert.equal(end.code, 'node_modules_exists');
+  assert.equal(calls.length, 0);
+});
+
+test('a second request during a local install joins it, although node_modules is there by then', async () => {
+  const { repo, calls } = useLocal();
+  let release;
+  const hold = new Promise((r) => { release = r; });
+  machines().local.shell = async (command) => {
+    calls.push(['shell', command]);
+    mkdirSync(path.join(repo, 'node_modules'));
+    await hold;
+    return { ok: true, code: 0, stdout: '', stderr: '' };
+  };
+  await startPrepare('local', 'here');
+  for (let i = 0; i < 200 && !calls.length; i += 1) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(live(await startPrepare('local', 'here')));
+  release();
+  assert.equal((await finished('local', 'here')).status, 'done');
+  assert.equal(calls.length, 1);
+});
+
+test('a local install is refused while the board is updating', async () => {
+  const { calls } = useLocal();
+  const holds = checkoutHooks.holdsNewWork;
+  checkoutHooks.holdsNewWork = () => true;
+  try {
+    await assert.rejects(() => startPrepare('local', 'here'), (e) => e.status === 409 && e.code === 'upgrading');
+    assert.equal(calls.length, 0);
+  } finally {
+    checkoutHooks.holdsNewWork = holds;
+  }
+});
+
+test('on Windows pnpm is looked up with where and run without POSIX syntax', async () => {
+  const { repo, calls } = useLocal({ lockfile: 'pnpm-lock.yaml', platform: 'win32' });
+  await startPrepare('local', 'here');
+  const end = await finished('local', 'here');
+  assert.equal(end.status, 'done', end.error);
+  assert.deepEqual(calls, [['where', 'pnpm'], ['shell', 'pnpm install --frozen-lockfile', repo]]);
+});
+
+test('on Windows a missing pnpm fails the run saying so, and installs nothing', async () => {
+  const { calls } = useLocal({ lockfile: 'pnpm-lock.yaml', platform: 'win32', pnpm: false });
+  await startPrepare('local', 'here');
+  const end = await finished('local', 'here');
+  assert.equal(end.status, 'failed');
+  assert.equal(end.code, 'installer_missing');
+  assert.match(end.error, /pnpm, which is not installed/);
+  assert.deepEqual(calls, [['where', 'pnpm']]);
+});
+
+test('on Windows npm needs no lookup; elsewhere pnpm keeps the corepack fallback', async () => {
+  const npm = useLocal({ platform: 'win32' });
+  await startPrepare('local', 'here');
+  assert.equal((await finished('local', 'here')).status, 'done');
+  assert.deepEqual(npm.calls.map((c) => c[1]), ['npm ci --no-audit --no-fund']);
+
+  resetPrepare();
+  const posix = useLocal({ lockfile: 'pnpm-lock.yaml', platform: 'linux' });
+  await startPrepare('local', 'here');
+  assert.equal((await finished('local', 'here')).status, 'done');
+  assert.equal(posix.calls.length, 1);
+  assert.match(posix.calls[0][1], /corepack enable.*pnpm install --frozen-lockfile$/);
 });

@@ -6,11 +6,13 @@ import { execFileSync } from 'node:child_process';
 import { tempDir } from './teardown.mjs';
 
 import { config } from '../src/config.js';
-import { saveProjects, listProjects } from '../src/projects.js';
+import { saveProjects, listProjects, setMachineAutoClone } from '../src/projects.js';
+import { DEFAULT_PROJECT_ID } from '../src/keys.js';
 import { registerRunnerClient } from '../src/machine.js';
 import { RepoStateError } from '../src/worktree.js';
 import {
   ensureCheckout, projectRepo, checkoutReadiness, checkoutStatus, checkoutsBusy, checkoutHooks, resetCheckouts,
+  checkoutEvents, backgroundEligible,
 } from '../src/checkout.js';
 
 const saved = config.machines;
@@ -339,4 +341,109 @@ test('a ready checkout does not wait for another project\'s install; installs st
   finishFirst();
   await Promise.all([first, second]);
   assert.deepEqual(order, ['ehr starts', 'ehr ends', 'notes installs']);
+});
+
+test('the local machine gets a job only for an install: no clone, no check, queued like any other', async () => {
+  const box = useBox(fakeBox());
+  let finish;
+  const order = [];
+  const first = ensureCheckout('local', 'ehr', {
+    install: async (machine, { push, setStep }) => {
+      assert.equal(path.resolve(machine.repoPath), path.resolve('/board/ehr'));
+      setStep('install');
+      push('installing');
+      order.push('ehr');
+      await new Promise((r) => { finish = r; });
+    },
+  });
+  await until(() => finish);
+  assert.deepEqual(checkoutsBusy(), [{ machine: 'local', project: 'ehr', repo: 'o/ehr', status: 'running', step: 'install' }]);
+  assert.deepEqual(await ensureCheckout('local', 'ehr'), { cloned: false, warnings: [] }, 'a caller without install does not wait');
+  // A project with no repository can still be installed on the board's machine.
+  const second = ensureCheckout('local', 'norepo', { install: async () => { order.push('norepo'); } });
+  assert.equal(checkoutStatus('local', 'norepo').status, 'queued');
+  assert.deepEqual(order, ['ehr']);
+  finish();
+  assert.deepEqual(await first, { cloned: false, warnings: [] });
+  await second;
+  assert.deepEqual(order, ['ehr', 'norepo']);
+  assert.deepEqual(checkoutStatus('local', 'ehr'), { status: 'done', step: null, lines: ['installing'], error: null });
+  assert.deepEqual(box.calls, []);
+  await assert.rejects(() => ensureCheckout('local', 'ghost', { install: async () => {} }), (e) => e.code === 'unknown_project');
+});
+
+test('a local install is held by a board upgrade', async () => {
+  checkoutHooks.holdsNewWork = () => true;
+  let ran = false;
+  await assert.rejects(() => ensureCheckout('local', 'ehr', { install: async () => { ran = true; } }), (e) => e.code === 'upgrading');
+  assert.equal(ran, false);
+  assert.equal(checkoutStatus('local', 'ehr').code, 'upgrading');
+});
+
+test('a failed job keeps the error code', async () => {
+  useBox(fakeBox({ cloneError: 'boom' }));
+  await assert.rejects(() => ensureCheckout('devbox', 'ehr'));
+  assert.equal(checkoutStatus('devbox', 'ehr').code, 'clone_failed');
+});
+
+test('change events follow status and step, not log lines; a broken listener fails nothing', async (t) => {
+  const seen = [];
+  t.after(() => checkoutEvents.removeAllListeners('change'));
+  checkoutEvents.on('change', (e) => seen.push(e));
+  checkoutEvents.on('change', () => { throw new Error('listener'); });
+  t.mock.method(console, 'error', () => {});
+  useBox(fakeBox());
+  await ensureCheckout('devbox', 'ehr', {
+    install: async (machine, { push, setStep }) => {
+      setStep('install');
+      push('one');
+      push('two');
+      setStep('install');
+    },
+  });
+  assert.deepEqual(seen.map((e) => `${e.status}/${e.step}`), ['running/clone', 'running/install', 'done/null']);
+  assert.deepEqual(seen.at(-1), { machine: 'devbox', project: 'ehr', status: 'done', step: null, error: null, code: null });
+
+  seen.length = 0;
+  useBox(fakeBox({ cloneError: 'boom' }));
+  await assert.rejects(() => ensureCheckout('devbox', 'notes'));
+  assert.equal(seen.at(-1).status, 'failed');
+  assert.equal(seen.at(-1).code, 'clone_failed');
+  assert.match(seen.at(-1).error, /boom/);
+});
+
+test('backgroundEligible: only convention paths of runners that are not excluded', (t) => {
+  const registered = listProjects();
+  t.after(() => saveProjects(registered));
+  const ask = (project = 'ehr', machine = 'devbox') => backgroundEligible(machine, project);
+  const no = (reason) => ({ eligible: false, reason });
+
+  useBox(fakeBox());
+  assert.deepEqual(ask(), { eligible: true, reason: null });
+  assert.deepEqual(ask('ehr', 'local'), no('local'));
+  assert.deepEqual(ask('ehr', 'nowhere'), no('unknown_machine'));
+  assert.deepEqual(ask('ghost'), no('unknown_project'));
+  assert.deepEqual(ask('norepo'), no('no_repo'));
+
+  saveProjects([...registered.filter((p) => p.id !== DEFAULT_PROJECT_ID), entry(DEFAULT_PROJECT_ID, 'o/default')]);
+  assert.deepEqual(ask(DEFAULT_PROJECT_ID), no('default_project'));
+
+  useBox(fakeBox(), { projectsRoot: false });
+  assert.deepEqual(ask(), no('projects_root_off'));
+  useBox(fakeBox(), { projects: { ehr: { repoPath: '/srv/ehr', worktreeRoot: '/srv/ehr-wt' } } });
+  assert.deepEqual(ask(), no('explicit_path'));
+
+  const unheard = fakeBox();
+  unheard.home = null;
+  useBox(unheard);
+  assert.deepEqual(ask(), no('home_unknown'));
+  useBox(unheard, { projectsRoot: '/srv' });
+  assert.deepEqual(ask(), { eligible: true, reason: null }, 'an absolute root needs no home');
+
+  useBox(fakeBox());
+  setMachineAutoClone('ehr', 'devbox', false);
+  assert.deepEqual(ask(), no('excluded'));
+  assert.equal(ask('notes').eligible, true);
+  setMachineAutoClone('ehr', 'devbox', true);
+  assert.equal(ask().eligible, true);
 });

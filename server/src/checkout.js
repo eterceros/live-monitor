@@ -1,5 +1,6 @@
-import { machines, machineFor, ensureHome } from './machine.js';
-import { projectOf, baseBranchOf } from './projects.js';
+import { EventEmitter } from 'node:events';
+import { machines, machineFor, ensureHome, declaredProject, DEFAULT_PROJECTS_ROOT } from './machine.js';
+import { projectOf, baseBranchOf, machineOptionsOf } from './projects.js';
 import { config } from './config.js';
 import { DEFAULT_PROJECT_ID } from './keys.js';
 import { parseGitHubRemote, detectRepo } from './repo-identity.js';
@@ -18,7 +19,8 @@ import { classifyRepoState } from './worktree.js';
  * Whatever already sits at the final path is never deleted or overwritten: it is checked, and
  * what is wrong with it is reported.
  *
- * On the board's own machine this does nothing.
+ * On the board's own machine there is nothing to clone or check: only a caller
+ * that passes `install` gets a job there, and it just runs the install.
  *
  * Keep this module a leaf: `pipeline.js` imports it, so it must not import
  * `pipeline.js` or `upgrade.js` (the upgrade guard comes in as a hook).
@@ -49,6 +51,12 @@ const KEEP_LINES = 30;
 
 /** git/gh words for "these credentials cannot read that repository". */
 const NO_ACCESS_RE = /could not resolve to a repository|repository not found|not logged in|gh auth login|authentication failed|permission denied \(publickey\)|could not read (username|password)|terminal prompts disabled|HTTP 40[134]|correct access rights|write access to repository not granted/i;
+
+/**
+ * `change` fires with `{machine, project, status, step, error, code}` each time
+ * a job's status or step changes; never for a log line.
+ */
+export const checkoutEvents = new EventEmitter();
 
 /** `${machine}\n${project}` -> the last (or current) job. */
 const jobs = new Map();
@@ -147,9 +155,32 @@ export async function checkoutReadiness(machine, {
   return { ready: true };
 }
 
-const view = (job) => ({ status: job.status, step: job.step, lines: [...job.lines], error: job.error });
+// `code` appears only on a failure that has one.
+const view = (job) => ({
+  status: job.status, step: job.step, lines: [...job.lines], error: job.error,
+  ...(job.code ? { code: job.code } : {}),
+});
 
-/** The last (or current) job of this project on this machine. `status`: idle, queued, running, done, failed. */
+/** Changes a job's state and announces it, once per real change of status or step. */
+function update(job, patch = {}) {
+  Object.assign(job, patch);
+  const key = `${job.status}\n${job.step}`;
+  if (key === job.announced) return;
+  job.announced = key;
+  const { machine, project, status, step, error, code } = job;
+  // A listener that fails must not fail the job.
+  try {
+    checkoutEvents.emit('change', { machine, project, status, step, error, code });
+  } catch (e) {
+    console.error(`[checkout] change listener failed: ${e.message}`);
+  }
+}
+
+/**
+ * The last (or current) job of this project on this machine. `status`: idle,
+ * queued, running, done, failed. A failed job also carries the error's `code`,
+ * when it has one.
+ */
 export function checkoutStatus(machineName, projectId) {
   const job = jobs.get(keyOf(machineName, projectId));
   return job ? view(job) : { status: 'idle', step: null, lines: [], error: null };
@@ -193,6 +224,9 @@ function deferred() {
  * default project's own) is only checked, unless `install` is given: that is
  * the explicit Prepare action.
  *
+ * On the local machine, without `install` nothing happens; with it, the job
+ * skips the clone and the check and goes straight to the queue.
+ *
  * @param {string} machineName
  * @param {string} projectId
  * @param {object} [options]
@@ -205,9 +239,11 @@ function deferred() {
 export async function ensureCheckout(machineName, projectId, { onLine, install } = {}) {
   const base = machines()[machineName];
   if (!base) throw new CheckoutError(`There is no machine "${machineName}" in config.machines`, 'unknown_machine', 404);
-  if (base.kind === 'local') return { cloned: false, warnings: [] };
+  const local = base.kind === 'local';
+  if (local && !install) return { cloned: false, warnings: [] };
   if (!projectOf(projectId)) throw new CheckoutError(`There is no project "${projectId}"`, 'unknown_project', 404);
-  const repo = projectRepo(projectId);
+  // A local install needs no repository: the project id then stands in for it.
+  const repo = projectRepo(projectId) ?? (local ? projectId : null);
   if (!repo) {
     throw new CheckoutError(
       `The project "${projectId}" has no GitHub repository (owner/name) to clone on ${machineName}: `
@@ -221,13 +257,14 @@ export async function ensureCheckout(machineName, projectId, { onLine, install }
   const fresh = !job || !unfinished(job);
   if (fresh) {
     job = {
-      machine: machineName, project: projectId, repo,
-      status: 'running', step: 'clone', lines: [], error: null,
+      machine: machineName, project: projectId, repo, local,
+      status: 'running', step: local ? 'install' : 'clone', lines: [], error: null, code: null,
       listeners: new Set(), install: null, ready: deferred(), done: deferred(),
     };
     jobs.set(key, job);
   }
   if (install) job.install ??= install;
+  if (fresh) update(job);
 
   if (onLine) {
     for (const line of job.lines) deliver(onLine, line);
@@ -245,8 +282,7 @@ export async function ensureCheckout(machineName, projectId, { onLine, install }
 async function inMachineTurn(job, work) {
   const previous = queues.get(job.machine);
   if (previous) {
-    job.status = 'queued';
-    job.step = 'queued';
+    update(job, { status: 'queued', step: 'queued' });
     push(job, `waiting for another checkout on ${job.machine} to finish`);
   }
   let release;
@@ -255,7 +291,7 @@ async function inMachineTurn(job, work) {
   queues.set(job.machine, turn);
   try {
     await previous;
-    job.status = 'running';
+    update(job, { status: 'running' });
     return await work();
   } finally {
     release();
@@ -266,7 +302,9 @@ async function inMachineTurn(job, work) {
 /** Never rejects: the outcome goes to the job. */
 async function runJob(job) {
   try {
-    const { machine, result } = await bringCheckout(job);
+    const { machine, result } = job.local
+      ? { machine: machineFor(job.machine, job.project), result: { cloned: false, warnings: [] } }
+      : await bringCheckout(job);
     job.ready.resolve(result);
     // Read only now: a caller that wants an install may have joined meanwhile.
     if (job.install) {
@@ -274,20 +312,18 @@ async function runJob(job) {
         assertNotUpgrading();
         await job.install(machine, {
           push: (line) => push(job, line),
-          setStep: (step) => { job.step = step; },
+          setStep: (step) => update(job, { step }),
         });
       });
     }
     // No `await` between reading `job.install` and this, or between the install's turn and this.
-    job.status = 'done';
-    job.step = null;
+    update(job, { status: 'done', step: null });
     job.done.resolve(result);
   } catch (raw) {
     const e = raw?.code === 'RUNNER_OFFLINE'
       ? new CheckoutError(`Runner "${job.machine}" is unreachable: ${raw.message}`, 'runner_unreachable', 502)
       : raw;
-    job.status = 'failed';
-    job.error = e.message;
+    update(job, { status: 'failed', error: e.message, code: typeof e.code === 'string' ? e.code : null });
     job.ready.reject(e);   // a no-op when only the install failed
     job.done.reject(e);
   }
@@ -300,10 +336,45 @@ function assertNotUpgrading() {
 }
 
 /** True for a path the `projectsRoot` convention chose, which is the only kind cloned unasked. */
-function isConventionPath(machineName, projectId) {
-  if (projectId === DEFAULT_PROJECT_ID) return false;
+const isConventionPath = (machineName, projectId) => !offConvention(machineName, projectId);
+
+/**
+ * Why this path was not chosen by the `projectsRoot` convention, or null when
+ * it was.
+ */
+function offConvention(machineName, projectId) {
+  if (projectId === DEFAULT_PROJECT_ID) return 'default_project';
   const explicit = config.machines?.[machineName]?.projects?.[projectId];
-  return !(explicit?.repoPath && explicit?.worktreeRoot);
+  return explicit?.repoPath && explicit?.worktreeRoot ? 'explicit_path' : null;
+}
+
+/**
+ * Whether the board may clone this project on this machine on its own, and if
+ * not, the first reason why: `unknown_machine`, `local`, `unknown_project`,
+ * `no_repo`, `default_project`, `explicit_path`, `projects_root_off`,
+ * `home_unknown` or `excluded`. `home_unknown` goes away once the runner has
+ * answered `/info` (`ensureHome`). Looks at nothing on the runner and asks it
+ * nothing.
+ *
+ * @returns {{eligible: boolean, reason: string|null}}
+ */
+export function backgroundEligible(machineName, projectId) {
+  const no = (reason) => ({ eligible: false, reason });
+  const base = machines()[machineName];
+  if (!base) return no('unknown_machine');
+  if (base.kind === 'local') return no('local');
+  if (!projectOf(projectId)) return no('unknown_project');
+  if (!projectRepo(projectId)) return no('no_repo');
+  const off = offConvention(machineName, projectId);
+  if (off) return no(off);
+  const declared = config.machines?.[machineName]?.projectsRoot;
+  const root = declared === undefined ? DEFAULT_PROJECTS_ROOT : declared;
+  if (typeof root !== 'string' || !root.trim()) return no('projects_root_off');
+  if (!declaredProject(machineName, projectId)) {
+    return no(root.trim().startsWith('~') && !base.home ? 'home_unknown' : 'projects_root_off');
+  }
+  if (!machineOptionsOf(projectId, machineName).autoClone) return no('excluded');
+  return { eligible: true, reason: null };
 }
 
 async function bringCheckout(job) {
@@ -329,7 +400,7 @@ async function bringCheckout(job) {
       );
     }
     cloned = await inMachineTurn(job, async () => {
-      job.step = 'clone';
+      update(job, { step: 'clone' });
       // Looked at again: it may have appeared while this waited.
       if (await machine.fs.exists(repoPath)) {
         await check();

@@ -184,7 +184,7 @@ export default function ImportProjectDialog({ onClose, onImported, defaultAssign
   return (
     <Dialog
       title={t.topbar.more.importProject} icon="plus" className="import-project"
-      onDismiss={busy ? null : onClose}
+      onDismiss={busy ? null : imported ? () => onImported(imported) : onClose}
       footer={(
         <>
           <span className="modal-caption">{t.topbar.importProject.footerNote}</span>

@@ -1,6 +1,7 @@
 import React from 'react';
 import Dialog from './Dialog.jsx';
 import Icon from './Icon.jsx';
+import { hostsProject, isBusy, useProjectMachines } from './InstallDepsDialog.jsx';
 import { useStrings } from '../i18n/useStrings.js';
 import { api } from '../api.js';
 import { fill } from '../i18n/index.js';
@@ -25,6 +26,102 @@ export function accountWarningText(t, w) {
 }
 
 /**
+ * One line saying how a runner's copy of the project stands. A job in progress
+ * or failed says more than what is on disk.
+ */
+function cloneState(s, row, online) {
+  const { job } = row;
+  if (job?.status === 'queued') return s.queued;
+  if (isBusy(job)) return job.step === 'install' ? s.installing : s.cloning;
+  // Put off by a board upgrade: the board tries again on its own.
+  if (job?.status === 'failed') return job.code === 'upgrading' ? s.deferred : fill(s.failed, { message: job.error });
+  if (online === false || row.reason === 'home_unknown') return s.unreachable;
+  if (row.present) return s.cloned;
+  if (row.autoClone === false) return s.excluded;
+  if (row.reason === 'explicit_path') return s.explicitPath;
+  return s.notCloned;
+}
+
+/**
+ * A card's «Machines» section: each runner's clone, with retry and the
+ * per-project exclusion, and the way back to the install question.
+ */
+function CardMachines({ project, name, hasRunners, machineStatus, onInstall }) {
+  const t = useStrings();
+  const m = t.topbar.manage;
+  const { rows, error, reload } = useProjectMachines(project, hasRunners);
+  const [pending, setPending] = React.useState({});
+  const [refusals, setRefusals] = React.useState({});
+
+  const act = async (machine, request) => {
+    setPending((now) => ({ ...now, [machine]: true }));
+    setRefusals((now) => ({ ...now, [machine]: null }));
+    try {
+      await request();
+      await reload();
+    } catch (e) {
+      setRefusals((now) => ({ ...now, [machine]: e.message }));
+    } finally {
+      setPending((now) => ({ ...now, [machine]: false }));
+    }
+  };
+
+  const runners = (rows ?? []).filter((row) => row.kind !== 'local' && hostsProject(row));
+  return (
+    <section className="pm-machines" aria-label={`${m.machines}: ${name}`}>
+      {error && <p className="pm-account-note" aria-live="polite">{fill(m.machinesFailed, { message: error })}</p>}
+      {runners.map((row) => {
+        const online = machineStatus[row.machine]?.online;
+        const state = cloneState(m.cloneState, row, online);
+        const failed = row.job?.status === 'failed';
+        // A path written in the config is never cloned from here.
+        const byConvention = row.reason !== 'explicit_path' && row.reason !== 'default_project';
+        const canClone = byConvention && !isBusy(row.job) && (failed || !row.present);
+        // A failure carries the server's message: it wraps, never truncates.
+        const wraps = failed && row.job.code !== 'upgrading';
+        return (
+          <div key={row.machine}>
+            <dl className="pm-fields">
+              <div className="pm-field">
+                <dt title={row.machine}>{row.machine}</dt>
+                {!wraps && <dd title={state} aria-live="polite">{state}</dd>}
+              </div>
+            </dl>
+            {wraps && <p className="pm-account-note" aria-live="polite">{state}</p>}
+            {byConvention && (
+              <div className="pm-card-actions">
+                <label className="pm-field">
+                  <input
+                    type="checkbox" checked={row.autoClone !== false} disabled={!!pending[row.machine]}
+                    aria-label={`${m.cloneAuto}: ${row.machine}`}
+                    onChange={(e) => {
+                      const autoClone = e.target.checked;
+                      act(row.machine, () => api.setMachineOptions(project, row.machine, { autoClone }));
+                    }}
+                  />
+                  {m.cloneAuto}
+                </label>
+                {canClone && (
+                  <button type="button" className="btn btn-sm" disabled={!!pending[row.machine]}
+                    aria-label={`${failed ? t.common.retry : m.cloneNow}: ${row.machine}`}
+                    onClick={() => act(row.machine, () => api.retryClone(project, row.machine))}>
+                    {failed ? t.common.retry : m.cloneNow}
+                  </button>
+                )}
+              </div>
+            )}
+            {refusals[row.machine] && <p className="pm-account-note" aria-live="polite">{refusals[row.machine]}</p>}
+          </div>
+        );
+      })}
+      <button type="button" className="btn btn-sm" onClick={() => onInstall?.(project)}>
+        {m.dependencies}
+      </button>
+    </section>
+  );
+}
+
+/**
  * Every project the board knows, as a responsive grid of cards: open it,
  * restrict or unrestrict it, change the GitHub account it works as, take it off
  * the board. Importing a new one is the header button. Nothing is confirmed
@@ -38,13 +135,18 @@ export function accountWarningText(t, w) {
  * @param {(id: string) => void} props.onSelect
  * @param {(id: string, restricted: boolean) => void} props.onToggleRestricted
  * @param {(project: object) => void} props.onRemove
+ * @param {{ name: string, kind: string }[]} props.machines
+ * @param {Record<string, { online: boolean }>} props.machineStatus by machine name
+ * @param {(id: string) => void} props.onInstall opens the install question
  */
 export default function ManageProjectsDialog({
   projects = [], activeProject, onClose, onImport, onSelect, onToggleRestricted, onRemove,
+  machines = [], machineStatus = {}, onInstall,
 }) {
   const t = useStrings();
   const m = t.topbar.manage;
   const p = t.topbar.picker;
+  const hasRunners = machines.some((x) => x.kind === 'runner');
 
   const field = (label, value) => (value ? (
     <div className="pm-field">
@@ -143,6 +245,10 @@ export default function ManageProjectsDialog({
                     {notes[x.id].warnings.map((w, i) => <li key={i}>{accountWarningText(t, w)}</li>)}
                   </ul>
                 )}
+                <CardMachines
+                  project={x.id} name={name} hasRunners={hasRunners}
+                  machineStatus={machineStatus} onInstall={onInstall}
+                />
                 <div className="pm-card-actions">
                   <button type="button" className="btn btn-md" onClick={() => { onSelect?.(x.id); onClose?.(); }}>
                     <Icon name="folder-git"/> {m.open}

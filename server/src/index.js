@@ -27,8 +27,10 @@ import { registerIssueDraftRoutes } from './issuedraft.js';
 import { HOLDER_TAB } from './chattabs.js';
 import { machineOf, machines } from './machine.js';
 import { startPrepare, prepareStatus, PrepareError } from './prepare.js';
+import { checkoutEvents } from './checkout.js';
+import { startBgClone, sweep, machineRows, machineRow, retryClone } from './bgclone.js';
 import { DEFAULT_PROJECT_ID, coerceKey, keyOf, makeKey, parseKey } from './keys.js';
-import { listProjects, projectOf, saveProjects, configFor, configSectionFor, setReviewerChoice, setProjectDesign, setProjectRestricted, removeProject, removedProjectFor, forgetRemovedProject, setGhAccount } from './projects.js';
+import { listProjects, projectOf, saveProjects, configFor, configSectionFor, setReviewerChoice, setProjectDesign, setProjectRestricted, removeProject, removedProjectFor, forgetRemovedProject, setGhAccount, setMachineAutoClone, setInstallChoice, machineOptionsOf } from './projects.js';
 import { ghTokenFor, identityIssues, ghAccounts, defaultGhLogin } from './gh-account.js';
 import { overridesOf, detectProfile, detectDefaultBranch, isProfileId } from './profiles.js';
 import { tuningSnapshot, setTuning } from './tuning.js';
@@ -607,6 +609,8 @@ app.post('/api/projects', async (req, res) => {
     const saved = saveProjects([...listProjects(), toSave]);
     forgetRemovedProject({ id: entry.id, repoPath });
     broadcast({ type: 'snapshot', ...snapshot() });
+    // Not awaited: the import never waits on a runner. `sweep` never rejects.
+    void sweep(undefined, entry.id);
     const project = saved.find((p) => p.id === entry.id);
     const warnings = await accountWarnings(project);
     return res.status(201).json(warnings.length ? { ...project, warnings } : project);
@@ -1211,9 +1215,53 @@ app.post('/api/projects/:project/machines/:machine/prepare', async (req, res) =>
   try {
     res.status(202).json(await startPrepare(req.params.machine, req.params.project));
   } catch (e) {
-    res.status(e instanceof PrepareError ? e.status : 500).json({ error: e.message });
+    res.status(e instanceof PrepareError ? e.status : 500).json({ error: e.message, code: e.code ?? undefined });
   }
 });
+
+// Each machine's copy of a project: clone state, the exclusion from background
+// cloning and the remembered install answer. See bgclone.js. Its errors, and
+// those of prepare.js, carry their own HTTP status.
+const machineRoute = (handler) => async (req, res) => {
+  try {
+    await handler(req, res);
+  } catch (e) {
+    res.status(e.status ?? 500).json({ error: e.message, code: e.code ?? undefined });
+  }
+};
+
+app.get('/api/projects/:project/machines', machineRoute(async (req, res) => {
+  res.json({ machines: await machineRows(req.params.project) });
+}));
+
+// The retry asked for by hand.
+app.post('/api/projects/:project/machines/:machine/clone', machineRoute(async (req, res) => {
+  res.status(202).json(await retryClone(req.params.machine, req.params.project));
+}));
+
+app.post('/api/projects/:project/machines/:machine/options', machineRoute(async (req, res) => {
+  const { project, machine } = req.params;
+  const refuse = (status, error, code) => res.status(status).json({ error, code });
+  if (!projectOf(project)) return refuse(404, `There is no project "${project}"`, 'unknown_project');
+  if (!Object.hasOwn(machines(), machine)) {
+    return refuse(404, `There is no machine "${machine}" in config.machines`, 'unknown_machine');
+  }
+  // Both are checked before either is saved.
+  const { autoClone, install } = req.body ?? {};
+  if (autoClone === undefined && install === undefined) return refuse(400, 'autoClone or install is required', 'invalid_options');
+  if (autoClone !== undefined && typeof autoClone !== 'boolean') {
+    return refuse(400, 'autoClone must be true or false', 'invalid_options');
+  }
+  if (install !== undefined && !['yes', 'no', null].includes(install)) {
+    return refuse(400, 'install must be "yes", "no" or null', 'invalid_options');
+  }
+  const wasExcluded = !machineOptionsOf(project, machine).autoClone;
+  if (autoClone !== undefined) setMachineAutoClone(project, machine, autoClone);
+  if (install !== undefined) setInstallChoice(project, machine, install);
+  // A runner taken back in gets what it is missing now, not at its next reconnection.
+  if (autoClone === true && wasExcluded) void sweep(machine, project);
+  return res.json(await machineRow(project, machine));
+}));
 
 app.post('/api/projects/:project/tasks/:issue/machine', withTask(async (task, req, res) => {
   try {
@@ -1859,6 +1907,8 @@ settings.on('change', (values) => {
 });
 taskSettingsSig = taskSettingsSigOf(settings.snapshot());
 pollEvents.on('poll', (poll) => broadcast({ type: 'poll', poll }));
+// A clone or install changing status or step, on any machine; never its log lines.
+checkoutEvents.on('change', (change) => broadcast({ type: 'checkout', ...change }));
 upgradeEvents.on('state', (state) => broadcast({ type: 'upgrade', state }));
 // `state` mirrors the upgrade broadcast; `quota` mirrors the field the
 // snapshot carries. The same object under both names, so the board can read it
@@ -1952,6 +2002,9 @@ server.listen(config.port, bootHost, () => {
   console.log(`plantillas de prompt validadas: ${promptCount}`);
   // What a crash or a restart left in the trash of a worktree root (`trash.js`).
   if (process.platform === 'win32') for (const p of listProjects()) if (p.worktreeRoot) void reapTrash(p.worktreeRoot);
+  // Before the `info()` calls below: each runner's first answer starts its first
+  // background clones.
+  if (process.env.HFSMON_NO_AUTOSTART !== '1') startBgClone();
   // A runner's `~` (where its checkouts live) is only known once it has answered.
   for (const m of Object.values(machines())) if (m.kind === 'runner') void m.info().catch(() => {});
   startPolling();

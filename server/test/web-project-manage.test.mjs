@@ -49,6 +49,34 @@ test('the dialog has the card grid, badges, the import button and the removal no
   assert.match(dialog, /x\.repoPath/);
 });
 
+test('each card shows its runners, with retry, exclusion and the way back to the install question', () => {
+  assert.match(dialog, /<CardMachines/);
+  assert.match(dialog, /api\.retryClone\(project, row\.machine\)/);
+  assert.match(dialog, /api\.setMachineOptions\(project, row\.machine, \{ autoClone \}\)/);
+  assert.match(dialog, /onInstall\?\.\(project\)/);
+});
+
+test('the install dialog asks per machine, refuses a local install over node_modules and scopes its promise', async () => {
+  const install = read('web/src/components/InstallDepsDialog.jsx');
+  assert.match(install, /<Dialog/);
+  assert.match(install, /local && !!row\.nodeModules/);
+  assert.match(install, /api\.setMachineOptions\(project, machine, \{ install: choice \}\)/);
+  assert.match(install, /if \(choice === 'yes'\) await api\.prepareProject\(project, machine\)/);
+  assert.match(install, /d\.scope/);
+  for (const l of LANGS) {
+    const { installDeps } = (await import(`../../web/src/i18n/strings/${l}.js`)).default.dialogs;
+    assert.match(installDeps.scope, /worktree/i, `${l}.installDeps.scope`);
+  }
+});
+
+test('App reopens the install question, asks it after an import and forwards checkout messages', () => {
+  const app = read('web/src/App.jsx');
+  assert.match(app, /checkout: \(msg\) => window\.dispatchEvent\(new CustomEvent\('board-checkout'/);
+  assert.match(app, /selectProject\(project\.id\);\s+setInstallFor\(project\.id\);/);
+  assert.match(app, /onInstall=\{setInstallFor\}/);
+  assert.match(app, /<InstallDepsDialog/);
+});
+
 test('the four catalogs carry the same new keys and holes', async () => {
   const es = await cat('es');
   for (const l of LANGS) {

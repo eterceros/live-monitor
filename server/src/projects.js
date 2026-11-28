@@ -190,6 +190,39 @@ function strOrNull(value, where) {
   return str(value, where);
 }
 
+/** What may be remembered about installing dependencies on one machine. */
+const INSTALL_CHOICES = ['yes', 'no'];
+
+/**
+ * The per-machine choices of a project in canonical shape, or `undefined` when
+ * they say nothing. Only what differs from the default is kept: `autoClone:
+ * false` (excluded from background cloning) and `install`.
+ */
+function machinesOf(raw, where) {
+  if (!isPlainObject(raw)) throw new Error(`${where}: expected an object, not ${JSON.stringify(raw)}`);
+  const out = [];
+  for (const [name, value] of Object.entries(raw)) {
+    const at = `${where}.${name}`;
+    if (!name || name === '__proto__') throw new Error(`${where}: invalid machine name ${JSON.stringify(name)}`);
+    if (!isPlainObject(value)) throw new Error(`${at}: expected an object, not ${JSON.stringify(value)}`);
+    const choice = {};
+    if (value.autoClone !== undefined && value.autoClone !== null) {
+      if (typeof value.autoClone !== 'boolean') {
+        throw new Error(`${at}.autoClone: expected true or false, not ${JSON.stringify(value.autoClone)}`);
+      }
+      if (!value.autoClone) choice.autoClone = false;
+    }
+    if (value.install !== undefined && value.install !== null) {
+      if (!INSTALL_CHOICES.includes(value.install)) {
+        throw new Error(`${at}.install: expected ${INSTALL_CHOICES.join(' or ')}, not ${JSON.stringify(value.install)}`);
+      }
+      choice.install = value.install;
+    }
+    if (Object.keys(choice).length) out.push([name, choice]);
+  }
+  return out.length ? Object.fromEntries(out) : undefined;
+}
+
 /**
  * Validates one registry entry and returns it in canonical shape.
  *
@@ -283,6 +316,10 @@ function normalize(raw, where) {
       );
     }
     out.settingSources = [...ss];
+  }
+  if (raw.machines !== undefined && raw.machines !== null) {
+    const kept = machinesOf(raw.machines, `${where}.machines`);
+    if (kept) out.machines = kept;
   }
   return out;
 }
@@ -614,6 +651,65 @@ export function setGhAccount(id, { ghUser, assignee } = {}) {
   else if (ghUser !== undefined) target.ghUser = loginOf(ghUser, 'ghUser');
   if (assignee !== undefined) target.assignee = loginOf(assignee, 'assignee');
   return saveProjects(list).find((p) => p.id === id);
+}
+
+/**
+ * What is remembered about one project on one machine, defaults filled in.
+ *
+ * @param {string} projectId
+ * @param {string} machine
+ * @returns {{autoClone: boolean, install: 'yes'|'no'|null}}
+ */
+export function machineOptionsOf(projectId, machine) {
+  const all = projectOf(projectId)?.machines;
+  const own = all && Object.hasOwn(all, machine) ? all[machine] : undefined;
+  return { autoClone: own?.autoClone !== false, install: own?.install ?? null };
+}
+
+/** Writes one per-machine choice through the single writer; the cached entry is never edited in place. */
+function setMachineChoice(fn, id, machine, patch) {
+  if (typeof machine !== 'string' || !machine || machine === '__proto__') {
+    throw new Error(`${fn}: expected a machine name, not ${JSON.stringify(machine ?? null)}`);
+  }
+  const list = load().map((p) => ({ ...p }));
+  const target = list.find((p) => p.id === id);
+  if (!target) throw new Error(`${fn}: no project is registered as ${JSON.stringify(id ?? null)}`);
+  const all = new Map(Object.entries(target.machines ?? {}));
+  all.set(machine, { ...all.get(machine), ...patch });
+  target.machines = Object.fromEntries(all);
+  return saveProjects(list).find((p) => p.id === id);
+}
+
+/**
+ * Includes a machine in background cloning of a project, or excludes it. Only
+ * the exclusion is stored.
+ *
+ * @param {string} id
+ * @param {string} machine
+ * @param {boolean} value
+ * @returns {Project} the saved entry.
+ * @throws {Error} on an unknown project, no machine name or a non-boolean.
+ */
+export function setMachineAutoClone(id, machine, value) {
+  if (typeof value !== 'boolean') throw new Error(`setMachineAutoClone: expected true or false, not ${JSON.stringify(value)}`);
+  return setMachineChoice('setMachineAutoClone', id, machine, { autoClone: value });
+}
+
+/**
+ * Remembers whether to install a project's dependencies on a machine; `null`
+ * forgets the answer.
+ *
+ * @param {string} id
+ * @param {string} machine
+ * @param {'yes'|'no'|null} value
+ * @returns {Project} the saved entry.
+ * @throws {Error} on an unknown project, no machine name or another value.
+ */
+export function setInstallChoice(id, machine, value) {
+  if (value !== null && !INSTALL_CHOICES.includes(value)) {
+    throw new Error(`setInstallChoice: expected "yes", "no" or null, not ${JSON.stringify(value)}`);
+  }
+  return setMachineChoice('setInstallChoice', id, machine, { install: value });
 }
 
 /** A path compared as the file system does: forward slashes, no trailing one, case-folded on Windows. */
