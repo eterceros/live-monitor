@@ -108,13 +108,14 @@ function wanted(machine, project, retryFailed) {
 /**
  * Whether a checkout that is already there still waits for its accepted
  * install: the board's update put it off, or none was attempted there. A failed
- * one is only retried by hand, whatever jobs came after it.
+ * one is only retried by hand, whatever jobs came after it; a job that failed
+ * before reaching its install attempted none (the timer still leaves a failed
+ * job alone, see `wanted`).
  */
 async function installOwed(name, project, machine) {
   if (machineOptionsOf(project, name).install !== 'yes') return false;
-  const job = checkoutStatus(name, project);
-  if (job.code === 'upgrading') return true;
-  if (job.status === 'failed' || installOutcome(name, project, machine.repoPath)) return false;
+  if (checkoutStatus(name, project).code === 'upgrading') return true;
+  if (installOutcome(name, project, machine.repoPath)) return false;
   return dependenciesMissing(machine);
 }
 
@@ -278,14 +279,14 @@ async function rowOf(projectId, name) {
   if (!local && reachable) await ensureHome(name).catch(() => {});
 
   let present = null;
-  let nodeModules = false;
+  let nodeModules = null;
   let installed = false;
   if (reachable) {
     try {
       const machine = machineFor(name, projectId);
       installed = installOutcome(name, projectId, machine.repoPath) === 'ran';
       present = await machine.fs.exists(machine.repoPath);
-      if (local) nodeModules = await machine.fs.exists(machine.path.join(machine.repoPath, 'node_modules'));
+      nodeModules = await machine.fs.exists(machine.path.join(machine.repoPath, 'node_modules'));
     } catch { /* no path there, or it stopped answering: unknown */ }
   }
 
@@ -305,13 +306,14 @@ async function rowOf(projectId, name) {
     install,
     // An install ran to the end there since the board started.
     installed,
-    ...(local ? { nodeModules } : {}),
+    nodeModules,
   };
 }
 
 /**
- * One project on one machine, as the API shows it. `present` is null when it
- * cannot be known (no path there, or the runner does not answer).
+ * One project on one machine, as the API shows it. `present` and `nodeModules`
+ * are null when they cannot be known (no path there, or the runner does not
+ * answer).
  *
  * @throws {CheckoutError} 404 on an unknown project or machine.
  */

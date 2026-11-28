@@ -229,6 +229,38 @@ test('a failed install is not retried by a sweep, even after a later clone-only 
   assert.equal((await machineRow('ehr', 'devbox')).installed, false, 'still offered by hand');
 });
 
+test('an install that never started, behind a failed fetch, runs at a later sweep but not by the timer', async () => {
+  setInstallChoice('ehr', 'devbox', 'yes');
+  const box = withLock();
+  const real = box.exec;
+  let offline = true;
+  box.exec = async (file, args, opts) => (offline && args.includes('fetch') ? no('could not resolve host') : real(file, args, opts));
+  await sweep(undefined, 'ehr');
+  await idle();
+  assert.equal(checkoutStatus('devbox', 'ehr').code, 'fetch_failed');
+  assert.equal(box.shells.length, 0);
+  offline = false;
+  assert.deepEqual(await sweep(undefined, 'ehr', { retryFailed: false }), [], 'the timer leaves a failed job alone');
+  // As when the runner is reachable again.
+  assert.deepEqual(pairs(await sweep('devbox', 'ehr')), ['devbox/ehr']);
+  await idle();
+  assert.equal(box.shells.length, 1);
+});
+
+test('the row says when node_modules is gone after an install, on a runner too', async () => {
+  const modules = '/home/zoe/src/ehr/node_modules';
+  setInstallChoice('ehr', 'devbox', 'yes');
+  const box = withLock();
+  box.shell = async (command) => { box.shells.push(command); box.files.add(modules); return yes(); };
+  await sweep(undefined, 'ehr');
+  await idle();
+  let row = await machineRow('ehr', 'devbox');
+  assert.deepEqual([row.installed, row.nodeModules], [true, true]);
+  box.files.delete(modules);
+  row = await machineRow('ehr', 'devbox');
+  assert.deepEqual([row.installed, row.nodeModules], [true, false]);
+});
+
 test('a new clone in the same path owes the install again', async () => {
   setInstallChoice('ehr', 'devbox', 'yes');
   const box = withLock();
@@ -538,7 +570,7 @@ test('the rows say what each machine has of a project', async () => {
   assert.equal(rows[0].nodeModules, false);
   assert.deepEqual(rows[1], {
     machine: 'devbox', kind: 'runner', eligible: false, reason: 'excluded', autoClone: false, present: true,
-    job: { status: 'idle', step: null, error: null, code: null }, deferred: false, install: 'no', installed: false,
+    job: { status: 'idle', step: null, error: null, code: null }, deferred: false, install: 'no', installed: false, nodeModules: false,
   });
   assert.deepEqual(await machineRow('ehr', 'devbox'), rows[1]);
   await assert.rejects(machineRows('ghost'), { status: 404 });

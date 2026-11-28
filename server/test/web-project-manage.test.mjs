@@ -94,7 +94,11 @@ test('a saved yes can be run again, unless something else already covers it', as
   for (const status of ['queued', 'running']) {
     assert.equal(canRunAgain(runnerRow({ job: { status } })), false, status);
   }
-  assert.equal(canRunAgain(runnerRow({ job: { status: 'done' }, installed: true })), false);
+  assert.equal(canRunAgain(runnerRow({ job: { status: 'done' }, installed: true, nodeModules: true })), false);
+  assert.equal(canRunAgain(runnerRow({ job: { status: 'done' }, installed: true, nodeModules: null })), false, 'unknown is not gone');
+  for (const kind of ['runner', 'local']) {
+    assert.equal(canRunAgain(runnerRow({ kind, job: { status: 'done' }, installed: true, nodeModules: false })), true, `${kind}: node_modules is gone`);
+  }
   assert.equal(canRunAgain(runnerRow({ job: { status: 'done' }, installed: false })), true, 'it ended without installing');
   assert.equal(canRunAgain(runnerRow({ kind: 'local', nodeModules: true })), false);
   assert.equal(canRunAgain(runnerRow({ kind: 'local', nodeModules: false })), true);

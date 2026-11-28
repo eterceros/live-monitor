@@ -25,7 +25,8 @@ export function canRunAgain(row, drafted) {
   if (row.install !== 'yes' || drafted || isBusy(row.job)) return false;
   if (row.kind === 'local' && row.nodeModules) return false;
   // A job can end «done» without having installed: skipped, or a clone alone.
-  return row.job?.status === 'failed' || !row.installed;
+  // And what an install left may be gone since (deleted, or cloned again by hand).
+  return row.job?.status === 'failed' || !row.installed || row.nodeModules === false;
 }
 
 /**
