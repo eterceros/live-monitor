@@ -468,6 +468,39 @@ test('a checkout on the target that is not ready is its own blocker, and is left
   }
 });
 
+test('a stalled checkout check does not hold the dialog: it says so, the next polls join it, and the answer shows', async () => {
+  const task = await taskOnLocal('stalled', { sessionId: null });
+  const original = config.machines;
+  const stub = move.moveHooks.checkoutReadiness;
+  const { probeMs } = move.moveHooks;
+  config.machines = { ...original, stalled: { ...original.box } };
+  const asked = [];
+  let answer;
+  const answered = new Promise((r) => { answer = r; });
+  move.moveHooks.checkoutReadiness = (m, options) => { asked.push(options); return answered; };
+  move.moveHooks.probeMs = 400;   // also the leash of the other probes of this runner
+  try {
+    for (let poll = 0; poll < 2; poll += 1) {
+      const started = Date.now();
+      const blockers = await move.moveBlockers(task, 'stalled');
+      assert.ok(Date.now() - started < 5000);
+      assert.ok(blockers.some((b) => b.code === 'checkout_checking'), JSON.stringify(blockers));
+    }
+    assert.equal(asked.length, 1, 'one check, joined by the polls');
+    assert.equal(asked[0].fetchTimeoutMs, 2 * 60_000, 'the fetch has its own, shorter limit here');
+    answer({ ready: false, code: 'fetch_failed', reason: 'git fetch failed (exit -2): timed out' });
+    await new Promise((r) => setTimeout(r, 20));
+    const after = await move.moveBlockers(task, 'stalled');
+    assert.match(after.find((b) => b.code === 'checkout_not_ready')?.text ?? '', /timed out/, JSON.stringify(after));
+    assert.equal(asked.length, 1, 'the answer the dialog had stopped waiting for is the one shown');
+  } finally {
+    answer({ ready: true });
+    config.machines = original;
+    move.moveHooks.checkoutReadiness = stub;
+    move.moveHooks.probeMs = probeMs;
+  }
+});
+
 test('restaurar sesiones: un fork toma la de su padre aunque vaya antes que él, y sin home no se pierde ninguna', async () => {
   const { addChatTo } = await import('../src/chats.js');
   n += 1;

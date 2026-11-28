@@ -29,7 +29,7 @@ function fakeBox() {
   const box = {
     kind: 'runner', name: 'devbox', home: null, repoPath: '/x', worktreeRoot: '/y', path: path.posix,
     events: [], dirs: new Set(), worktrees: new Set(), cloneError: null, push: 'true',
-    cloneGate: null, headGate: null, headHeld: false,
+    cloneGate: null, headGate: null, headHeld: false, gitLog: '',
     samePath: (a, b) => a === b,
     info: async () => { box.home = '/home/zoe'; return { home: '/home/zoe', claude: expectedClaudeVersion() ?? '999.0.0' }; },
     fs: {
@@ -57,6 +57,7 @@ function fakeBox() {
         box.headHeld = true;
         await box.headGate;
       }
+      if (verb === 'log') return yes(box.gitLog);
       if (verb === 'remote' && rest[0] === 'get-url') return yes('https://github.com/o/ehr.git\n');
       if (verb === 'rev-parse' && rest.includes('--git-common-dir')) return box.worktrees.has(opts.cwd) ? yes(`${REPO}/.git\n`) : no();
       if (verb === 'worktree' && rest[0] === 'add') {
@@ -79,6 +80,7 @@ let chats;
 let ChatSession;
 const real = {};
 const sent = [];
+const sessions = [];   // the live session behind each send
 const saved = config.machines;
 
 before(async () => {
@@ -92,6 +94,7 @@ before(async () => {
   ChatSession.prototype.retune = async () => ({ reopened: false });
   ChatSession.prototype.send = async function send(prompt) {
     sent.push({ cwd: this.cwd, prompt });
+    sessions.push(this);
     return { ok: true, sessionId: `sess-${sent.length}`, toolCounts: {}, resultText: '' };
   };
 });
@@ -317,4 +320,111 @@ test('the shared worktree is refreshed once at a time: a second call joins the o
   ]);
   assert.equal(second, first);
   assert.notEqual(await projectchats.refreshHolderWorktree(holder), first);
+});
+
+/**
+ * A chat after its first turn, with its process still up and idle, and a second
+ * message held on its way to the send. `self` drives that process.
+ */
+async function secondMessageHeld() {
+  const { holder, chat, key } = await runnerChat();
+  pipeline.sendChat(key, chat.id, 'primero');
+  await until(() => !chat.busy && sent.length === 1);
+  const session = sessions.at(-1);
+  const self = { running: false, interrupts: 0, session };
+  Object.defineProperty(session, 'alive', { configurable: true, get: () => true });
+  Object.defineProperty(session, 'selfTurn', { configurable: true, get: () => self.running });
+  session.interrupt = async () => { self.interrupts += 1; };
+  self.start = () => { self.running = true; session.onEvent({ kind: 'turn_start', own: false }); };
+  self.end = () => { self.running = false; session.onEvent({ kind: 'turn_end', own: false }); };
+  const head = gate();
+  box.headGate = head.promise;
+  box.headHeld = false;
+  pipeline.sendChat(key, chat.id, 'en-preparacion');
+  await until(() => box.headHeld);
+  const release = () => { box.headGate = null; head.open(); };
+  return { holder, chat, key, self, release };
+}
+
+test('Stop also stops a turn the session started on its own while a message was being prepared', async () => {
+  const { chat, key, self, release } = await secondMessageHeld();
+  self.start();
+  await pipeline.interruptChat(key, chat.id);
+  assert.equal(self.interrupts, 1, 'the work the session is doing is interrupted');
+  assert.equal(chat.busy, true, 'it does not look idle until that turn ends');
+  assert.equal(said(chat, /message was not sent/).length, 1);
+  self.end();
+  assert.equal(chat.busy, false);
+  release();
+  await settle();
+  assert.equal(sent.length, 1, 'the stopped message never reaches the session');
+  assert.equal(chat.busy, false);
+});
+
+test('a turn of the session\'s own that ends during the preparation leaves the chat busy and stoppable', async () => {
+  const { chat, key, self, release } = await secondMessageHeld();
+  self.start();
+  self.end();
+  assert.equal(chat.busy, true, 'our message is still on its way');
+  await pipeline.interruptChat(key, chat.id);
+  assert.equal(self.interrupts, 0, 'nothing of the session was running any more');
+  assert.equal(chat.busy, false);
+  release();
+  await settle();
+  assert.equal(sent.length, 1);
+});
+
+test('an idle session closing during the preparation does not free the chat or start a second turn', async (t) => {
+  const { chat, key } = await runnerChat();
+  pipeline.sendChat(key, chat.id, 'primero');
+  await until(() => !chat.busy && sent.length === 1);
+  const session = sessions.at(-1);
+  // Held in the checkout step itself, before the turn has taken the session.
+  const { ensure } = pipeline.chatOwnerHooks;
+  t.after(() => { pipeline.chatOwnerHooks.ensure = ensure; });
+  const held = gate();
+  let preparations = 0;
+  pipeline.chatOwnerHooks.ensure = async (...args) => { preparations += 1; await held.promise; return ensure(...args); };
+  pipeline.sendChat(key, chat.id, 'en-preparacion');
+  await until(() => preparations === 1);
+  pipeline.sendChat(key, chat.id, 'nota-pendiente');
+  session.onEvent({ kind: 'session_closed' });
+  await settle();
+  assert.equal(chat.busy, true);
+  assert.equal(said(chat, /session closed with work in progress/).length, 0);
+  assert.equal(chat.notes.length, 1, 'the note still waits');
+  assert.equal(preparations, 1, 'no second turn beside the first');
+  held.open();
+  await until(() => !chat.busy);
+  await settle();
+  assert.equal(sent.filter((x) => x.prompt.includes('en-preparacion')).length, 1);
+  assert.equal(sent.filter((x) => x.prompt.includes('nota-pendiente')).length, 1);
+});
+
+test('a sibling notice that arrives after the briefing was built reaches the model, once', async () => {
+  const { holder, chat, release } = await secondMessageHeld();
+  const sibling = chats.addChatTo(holder, {});
+  chats.tellSiblings(holder, sibling.id, 'aviso-tardio', ['bbb2222 later commit']);
+  release();
+  await until(() => !chat.busy && sent.length === 2);
+  assert.equal(times(sent[1].prompt, 'aviso-tardio'), 1);
+  assert.deepEqual(chat.news, [], 'told, so not told again');
+});
+
+test('a notice whose commits the briefing already lists is not repeated', async () => {
+  const { holder, chat, key } = await runnerChat();
+  pipeline.sendChat(key, chat.id, 'primero');
+  await until(() => !chat.busy && sent.length === 1);
+  const sibling = chats.addChatTo(holder, {});
+  chat.lastSeenSha = 'aaa0000';
+  box.gitLog = 'aaa1111 covered commit\n';
+  chats.tellSiblings(holder, sibling.id, 'aviso-cubierto', ['aaa1111 covered commit']);
+  // And one the briefing cannot cover: this chat has already seen past it.
+  chats.tellSiblings(holder, sibling.id, 'aviso-antiguo', ['ccc3333 already behind']);
+  pipeline.sendChat(key, chat.id, 'segundo');
+  await until(() => !chat.busy && sent.length === 2);
+  assert.equal(times(sent[1].prompt, 'covered commit'), 1, 'listed by the briefing');
+  assert.equal(times(sent[1].prompt, 'aviso-cubierto'), 0);
+  assert.equal(times(sent[1].prompt, 'aviso-antiguo'), 1);
+  assert.deepEqual(chat.news, []);
 });

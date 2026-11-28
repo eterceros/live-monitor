@@ -2,13 +2,15 @@ import './isolate.mjs';   // first: isolates the data directory
 import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { tempDir } from './teardown.mjs';
 
 import { config } from '../src/config.js';
-import { saveProjects } from '../src/projects.js';
+import { saveProjects, listProjects } from '../src/projects.js';
 import { registerRunnerClient } from '../src/machine.js';
 import { RepoStateError } from '../src/worktree.js';
 import {
-  ensureCheckout, checkoutReadiness, checkoutStatus, checkoutsBusy, checkoutHooks, resetCheckouts,
+  ensureCheckout, projectRepo, checkoutReadiness, checkoutStatus, checkoutsBusy, checkoutHooks, resetCheckouts,
 } from '../src/checkout.js';
 
 const saved = config.machines;
@@ -77,6 +79,14 @@ function useBox(box, spec = {}) {
   config.machines = { devbox: { ...SPEC, ...spec } };
   registerRunnerClient(() => box);
   return box;
+}
+
+async function until(ok, ms = 3000) {
+  const start = Date.now();
+  while (!ok()) {
+    if (Date.now() - start > ms) throw new Error('timeout');
+    await new Promise((r) => setTimeout(r, 5));
+  }
 }
 
 const clones = (box) => box.calls.filter((c) => c[0] === 'gh' && c[1] === 'repo');
@@ -178,7 +188,7 @@ test('one clone per project with both logs; another project waits its turn', asy
   const first = ensureCheckout('devbox', 'ehr', { onLine: (l) => a.push(l) });
   const same = ensureCheckout('devbox', 'ehr', { onLine: (l) => b.push(l) });
   const other = ensureCheckout('devbox', 'notes');
-  assert.equal(checkoutStatus('devbox', 'notes').status, 'queued');
+  await until(() => checkoutStatus('devbox', 'notes').status === 'queued');
   assert.equal(checkoutStatus('devbox', 'notes').step, 'queued');
   assert.equal(checkoutsBusy().length, 2);
   release();
@@ -255,4 +265,78 @@ test('during a board upgrade nothing new is cloned; a ready checkout still passe
   assert.equal(clones(box).length, 0);
   useBox(fakeBox({ dirs: { [FINAL]: ready() } }));
   assert.equal((await ensureCheckout('devbox', 'ehr')).cloned, false);
+});
+
+test('a project with no repo takes it from the board checkout\'s origin, as github.js does', async (t) => {
+  const board = tempDir('hfsmon-board-');
+  execFileSync('git', ['init', '-q', board]);
+  execFileSync('git', ['-C', board, 'remote', 'add', 'origin', 'git@github.com:o/ehr.git']);
+  const registered = listProjects();
+  t.after(() => saveProjects(registered));
+  saveProjects(registered.map((p) => (p.id === 'norepo' ? { ...p, repo: null, repoPath: board } : p)));
+  assert.equal(projectRepo('norepo'), 'o/ehr');
+
+  // Already on the runner: checked and used, nothing cloned.
+  const there = useBox(fakeBox());
+  const at = `/home/zoe/src/${path.basename(board)}`;
+  there.dirs.set(at, ready());
+  assert.equal((await ensureCheckout('devbox', 'norepo')).cloned, false);
+  assert.equal(clones(there).length, 0);
+
+  // Missing: the detected repository is what gets cloned.
+  resetCheckouts();
+  const empty = useBox(fakeBox());
+  assert.equal((await ensureCheckout('devbox', 'norepo')).cloned, true);
+  assert.equal(clones(empty)[0][3], 'o/ehr');
+});
+
+test('the readiness check gives its fetch the limit the caller asks for', async () => {
+  const box = useBox(fakeBox({ dirs: { [FINAL]: ready() } }));
+  const limits = [];
+  const exec = box.exec;
+  box.exec = (file, args, opts = {}) => {
+    if (args.includes('fetch')) limits.push(opts.timeoutMs);
+    return exec(file, args, opts);
+  };
+  const at = { ...box, repoPath: FINAL };
+  await checkoutReadiness(at, { repo: 'o/ehr', fetchTimeoutMs: 1234 });
+  await checkoutReadiness(at, { repo: 'o/ehr' });
+  assert.deepEqual(limits, [1234, checkoutHooks.fetchTimeoutMs]);
+});
+
+test('a ready checkout does not wait for another project\'s clone', async () => {
+  let release;
+  const box = useBox(fakeBox({ dirs: { '/home/zoe/src/notes': { origin: 'https://github.com/o/notes.git', refs: ['main'] } }, hold: new Promise((r) => { release = r; }) }));
+  const cloning = ensureCheckout('devbox', 'ehr');
+  await until(() => clones(box).length === 1);
+  assert.deepEqual(await ensureCheckout('devbox', 'notes'), { cloned: false, warnings: [] });
+  assert.equal(checkoutStatus('devbox', 'ehr').status, 'running', 'the clone is still under way');
+  release();
+  await cloning;
+});
+
+test('a ready checkout does not wait for another project\'s install; installs still take turns', async () => {
+  const ready2 = (repo) => ({ origin: `https://github.com/${repo}.git`, refs: ['main'] });
+  useBox(fakeBox({ dirs: { [FINAL]: ready2('o/ehr'), '/home/zoe/src/notes': ready2('o/notes') } }));
+  let finishFirst;
+  const order = [];
+  const first = ensureCheckout('devbox', 'ehr', {
+    install: async () => {
+      order.push('ehr starts');
+      await new Promise((r) => { finishFirst = r; });
+      order.push('ehr ends');
+    },
+  });
+  await until(() => finishFirst);
+  // A chat or a task of the other project is answered at once...
+  await ensureCheckout('devbox', 'notes');
+  await until(() => checkoutStatus('devbox', 'notes').status === 'done');
+  // ...and its Prepare waits its turn, while later callers still do not.
+  const second = ensureCheckout('devbox', 'notes', { install: async () => { order.push('notes installs'); } });
+  await until(() => checkoutStatus('devbox', 'notes').status === 'queued');
+  assert.deepEqual(await ensureCheckout('devbox', 'notes'), { cloned: false, warnings: [] });
+  assert.deepEqual(order, ['ehr starts']);
+  finishFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ['ehr starts', 'ehr ends', 'notes installs']);
 });

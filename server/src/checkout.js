@@ -9,12 +9,13 @@ import { classifyRepoState } from './worktree.js';
  * "The checkout of this project is on this machine": the one step that runs
  * before anything cuts a worktree on a runner.
  *
- * One queue per machine, one job per project: a second request for the same
- * project joins the job in flight (and its log), a request for another project
- * waits its turn. A missing checkout is cloned with the runner's own `gh`
- * credentials (no token ever leaves the board) into a reserved sibling
- * directory, checked there, and only then renamed into place. Whatever already
- * sits at the final path is never deleted or overwritten: it is checked, and
+ * One job per project and machine: a second request for the same project joins
+ * the job in flight (and its log). Clones and installs go through one queue per
+ * machine, one at a time; looking at a checkout that is already there does not,
+ * so a usable one never waits for another project. A missing checkout is cloned
+ * with the runner's own `gh` credentials (no token ever leaves the board) into a
+ * reserved sibling directory, checked there, and only then renamed into place.
+ * Whatever already sits at the final path is never deleted or overwritten: it is checked, and
  * what is wrong with it is reported.
  *
  * On the board's own machine this does nothing.
@@ -51,22 +52,23 @@ const NO_ACCESS_RE = /could not resolve to a repository|repository not found|not
 
 /** `${machine}\n${project}` -> the last (or current) job. */
 const jobs = new Map();
-/** machine -> promise that settles when its last queued job does. */
+/** machine -> promise that settles when its last queued clone or install does. */
 const queues = new Map();
 
 const keyOf = (machine, project) => `${machine}\n${project}`;
 const tail = (r) => String(r?.stderr || r?.stdout || '').trim().split('\n').slice(-3).join(' | ');
 
 /**
- * The GitHub `owner/name` of a project, or null. The default project may leave
- * it unset and have it read from the board's own checkout, as `github.js` does.
+ * The GitHub `owner/name` of a project, or null. A project may leave it unset
+ * and have it read from the `origin` of the board's own checkout, as
+ * `github.js` does.
  */
 export function projectRepo(projectId) {
   const project = projectOf(projectId);
   const declared = typeof project?.repo === 'string' ? project.repo.trim() : '';
   if (declared) return REPO_RE.test(declared) ? declared : null;
-  if (projectId !== DEFAULT_PROJECT_ID) return null;
-  return config.github.repo ?? detectRepo(config.project.repoPath);
+  if (projectId === DEFAULT_PROJECT_ID) return config.github.repo ?? detectRepo(config.project.repoPath);
+  return detectRepo(project?.repoPath);
 }
 
 /** `owner/name` of an origin URL, also with a login in HTTPS or in `ssh://` form. */
@@ -96,7 +98,9 @@ function noAccess(repo, machineName, detail) {
  *   `RepoStateError` for the repository states).
  * @throws if the runner cannot be reached.
  */
-export async function checkoutReadiness(machine, { repo, baseBranch = 'main', repoPath = machine.repoPath, onLine } = {}) {
+export async function checkoutReadiness(machine, {
+  repo, baseBranch = 'main', repoPath = machine.repoPath, onLine, fetchTimeoutMs = checkoutHooks.fetchTimeoutMs,
+} = {}) {
   const where = `${repoPath} on ${machine.name}`;
   const not = (code, reason, error = new CheckoutError(reason, code)) => ({ ready: false, code, reason, error });
   const git = (args, timeoutMs = checkoutHooks.probeTimeoutMs, extra = {}) => machine.exec('git', ['-C', repoPath, ...args], { timeoutMs, ...extra });
@@ -125,7 +129,7 @@ export async function checkoutReadiness(machine, { repo, baseBranch = 'main', re
     return not('wrong_origin', `the checkout at ${where} has origin ${found ?? (origin.stdout.trim() || '(none)')}, not ${repo}: it was left untouched`);
   }
 
-  const fetched = await git(['fetch', '--prune', 'origin'], checkoutHooks.fetchTimeoutMs, { onLine });
+  const fetched = await git(['fetch', '--prune', 'origin'], fetchTimeoutMs, { onLine });
   if (!fetched.ok) {
     if (NO_ACCESS_RE.test(tail(fetched))) {
       const error = noAccess(repo, machine.name, tail(fetched));
@@ -206,7 +210,8 @@ export async function ensureCheckout(machineName, projectId, { onLine, install }
   const repo = projectRepo(projectId);
   if (!repo) {
     throw new CheckoutError(
-      `The project "${projectId}" has no GitHub repository (owner/name) to clone on ${machineName}: set its repo in the project settings`,
+      `The project "${projectId}" has no GitHub repository (owner/name) to clone on ${machineName}: `
+      + 'set its repo in the project settings, or give its checkout on the board a GitHub origin',
       'no_repo',
     );
   }
@@ -217,7 +222,7 @@ export async function ensureCheckout(machineName, projectId, { onLine, install }
   if (fresh) {
     job = {
       machine: machineName, project: projectId, repo,
-      status: 'queued', step: 'queued', lines: [], error: null,
+      status: 'running', step: 'clone', lines: [], error: null,
       listeners: new Set(), install: null, ready: deferred(), done: deferred(),
     };
     jobs.set(key, job);
@@ -228,10 +233,7 @@ export async function ensureCheckout(machineName, projectId, { onLine, install }
     for (const line of job.lines) deliver(onLine, line);
     job.listeners.add(onLine);
   }
-  if (fresh) {
-    if (queues.has(machineName)) push(job, `waiting for another checkout on ${machineName} to finish`);
-    enqueue(job);
-  }
+  if (fresh) void runJob(job);
   try {
     return await (install ? job.done : job.ready).promise;
   } finally {
@@ -239,29 +241,44 @@ export async function ensureCheckout(machineName, projectId, { onLine, install }
   }
 }
 
-function enqueue(job) {
-  const previous = queues.get(job.machine) ?? Promise.resolve();
-  const next = previous.then(() => runJob(job));
-  queues.set(job.machine, next);
-  void next.then(() => { if (queues.get(job.machine) === next) queues.delete(job.machine); });
+/** Runs `work` once the clones and installs queued before it on the job's machine are done. */
+async function inMachineTurn(job, work) {
+  const previous = queues.get(job.machine);
+  if (previous) {
+    job.status = 'queued';
+    job.step = 'queued';
+    push(job, `waiting for another checkout on ${job.machine} to finish`);
+  }
+  let release;
+  const mine = new Promise((resolve) => { release = resolve; });
+  const turn = (previous ?? Promise.resolve()).then(() => mine);
+  queues.set(job.machine, turn);
+  try {
+    await previous;
+    job.status = 'running';
+    return await work();
+  } finally {
+    release();
+    if (queues.get(job.machine) === turn) queues.delete(job.machine);
+  }
 }
 
-/** Never rejects: the outcome goes to the job, so the queue always moves on. */
+/** Never rejects: the outcome goes to the job. */
 async function runJob(job) {
-  job.status = 'running';
-  job.step = 'clone';
   try {
     const { machine, result } = await bringCheckout(job);
     job.ready.resolve(result);
     // Read only now: a caller that wants an install may have joined meanwhile.
     if (job.install) {
-      assertNotUpgrading();
-      await job.install(machine, {
-        push: (line) => push(job, line),
-        setStep: (step) => { job.step = step; },
+      await inMachineTurn(job, async () => {
+        assertNotUpgrading();
+        await job.install(machine, {
+          push: (line) => push(job, line),
+          setStep: (step) => { job.step = step; },
+        });
       });
     }
-    // No `await` between reading `job.install` and this, or between the install and this.
+    // No `await` between reading `job.install` and this, or between the install's turn and this.
     job.status = 'done';
     job.step = null;
     job.done.resolve(result);
@@ -294,11 +311,15 @@ async function bringCheckout(job) {
   const machine = machineFor(job.machine, job.project);
   const { repoPath } = machine;
   const options = { repo: job.repo, baseBranch: baseBranchOf(job.project), onLine: (line) => push(job, line) };
-
-  let cloned = false;
-  if (await machine.fs.exists(repoPath)) {
+  const check = async () => {
     const state = await checkoutHooks.readiness(machine, options);
     if (!state.ready) throw state.error;
+  };
+
+  let cloned = false;
+  // Outside the queue: looking at what is there never waits for another project.
+  if (await machine.fs.exists(repoPath)) {
+    await check();
   } else {
     if (!job.install && !isConventionPath(job.machine, job.project)) {
       throw new CheckoutError(
@@ -307,9 +328,17 @@ async function bringCheckout(job) {
         'missing',
       );
     }
-    assertNotUpgrading();
-    await clone(job, machine, options);
-    cloned = true;
+    cloned = await inMachineTurn(job, async () => {
+      job.step = 'clone';
+      // Looked at again: it may have appeared while this waited.
+      if (await machine.fs.exists(repoPath)) {
+        await check();
+        return false;
+      }
+      assertNotUpgrading();
+      await clone(job, machine, options);
+      return true;
+    });
   }
   return { machine, result: { cloned, warnings: await pushWarnings(job, machine) } };
 }

@@ -118,6 +118,9 @@ export class ChatSession {
   /** True while a prompt of ours is being answered. */
   get busy() { return this.#turn !== null; }
 
+  /** True while a turn the process started on its own is running. */
+  get selfTurn() { return this.#selfTurn; }
+
   /** True while the process has work going that no prompt of ours is waiting on. */
   get working() { return this.#selfTurn || this.#tasks.size > 0; }
 

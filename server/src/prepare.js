@@ -7,8 +7,8 @@ import { ensureCheckout, checkoutStatus, checkoutsBusy, checkoutHooks, projectRe
  * run there — clone it under the runner's `projectsRoot`, make its worktree
  * root, install its dependencies — using only the runner's own `exec`.
  *
- * The checkout itself, and the queue it waits in (one per machine, one job per
- * project, shared with the clones that chats and tasks start), are
+ * The checkout itself, the job (one per project, shared with the ones chats and
+ * tasks start) and the per-machine queue for clones and installs are
  * `checkout.js`; this adds the worktree root and the dependencies.
  *
  * What this deliberately does NOT take from the caller: a URL, a path or a
@@ -57,11 +57,11 @@ export function prepareStatus(machineName, projectId) {
 }
 
 /**
- * Queues a run. One already going for this project here is joined (a clone a
- * chat or a task started gets the install chained to it); another project on
- * the same machine makes this one wait its turn.
+ * Starts a run. One already going for this project here is joined (a clone a
+ * chat or a task started gets the install chained to it); its clone and its
+ * install wait for those of other projects on the same machine.
  *
- * @returns {Promise<object>} the state right after queuing; the run goes on in the background.
+ * @returns {Promise<object>} the state right after starting; the run goes on in the background.
  * @throws {PrepareError} not a runner, unknown project, no GitHub repo, no known path yet, board updating.
  */
 export async function startPrepare(machineName, projectId) {
@@ -92,7 +92,7 @@ export async function startPrepare(machineName, projectId) {
   return prepareStatus(machineName, projectId);
 }
 
-/** What Prepare does once the checkout is ready, still holding the machine's turn. */
+/** What Prepare does once the checkout is ready, in its turn on the machine's queue. */
 async function install(machine, { push, setStep }) {
   const { repoPath, worktreeRoot } = machine;
 

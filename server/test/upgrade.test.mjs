@@ -679,12 +679,34 @@ test('idleReasons: a clone running or queued on a machine is a reason; a waiting
     assert.equal(reasons[0].machine, 'box');
     assert.equal(reasons[0].project, 'hfs');
     assert.equal(reasons[0].issue, null);
-    assert.match(reasons[0].text, /waiting for its checkout on box/);
-    await waitFor(() => /cloning or checking .+ on box/.test(upgrade.idleReasons().reasons[0]?.text), 'the job starts');
+    assert.match(reasons[0].text, /cloning or checking .+ on box/);
     release();
     await job;
     ({ reasons } = upgrade.idleReasons());
     assert.deepEqual(reasons, [], 'a finished job holds nothing');
+
+    // An install waiting its turn behind another one is a reason too.
+    let finish;
+    const running = new Promise((r) => { finish = r; });
+    let installing = false;
+    const first = ensureCheckout('box', 'hfs', { install: () => { installing = true; return running; } });
+    await waitFor(() => installing, 'the install takes the machine\'s turn');
+    const { saveProjects, listProjects } = await import('../src/projects.js');
+    const registered = listProjects();
+    saveProjects([...registered, { ...registered[0], id: 'second', name: 'second', repo: 'o/second' }]);
+    const box = config.machines.box;
+    config.machines.box = { ...box, projects: { ...box.projects, second: { repoPath: box.repoPath, worktreeRoot: '/s-wt' } } };
+    try {
+      const queued = ensureCheckout('box', 'second', { install: async () => {} });
+      await waitFor(() => upgrade.idleReasons().reasons.some((r) => /second is waiting for its checkout on box/.test(r.text)), 'the second one queues');
+      finish();
+      await Promise.all([first, queued]);
+    } finally {
+      finish();
+      config.machines.box = box;
+      saveProjects(registered);
+    }
+    assert.deepEqual(upgrade.idleReasons().reasons, []);
 
     holdBoard();
     await upgrade.requestUpgrade({ target: LATEST });

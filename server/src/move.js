@@ -48,6 +48,8 @@ const HANDOFF_TIMEOUT_MS = 5 * 60_000;
 const PREWARM_TIMEOUT_MS = 90 * 60_000;
 const SIZE_TTL_MS = 10 * 60_000;
 const FETCH_TTL_MS = 30_000;
+/** The fetch of the checkout check, held to the limit `fetchBranch` has: somebody is waiting for the answer. */
+const CHECKOUT_FETCH_MS = 2 * 60_000;
 
 const HOME_TTL_MS = 10 * 60_000;
 
@@ -80,14 +82,16 @@ function cachedHome(machine) {
  * the SDK's, which an in-process runner answers with whatever the host has;
  * `homeOf` decides where transcripts are looked for, so a test never writes
  * into the user's real `~/.claude/projects`; `probeMs` is how long a remote
- * probe may take before the target counts as unreachable; `checkoutReadiness`
- * wants a GitHub origin, which a test's local one is not.
+ * probe may take before the target counts as unreachable, and how long the
+ * dialog waits for the checkout check before showing it as still under way;
+ * `checkoutReadiness` wants a GitHub origin, which a test's local one is not.
  */
 export const moveHooks = {
   runClaude: (options) => runClaude(options),
   assertMachineReady: (machine) => assertMachineReady(machine),
   homeOf: (machine) => cachedHome(machine),
   probeMs: PROBE_MS,
+  checkoutFetchMs: CHECKOUT_FETCH_MS,
   checkoutReadiness: (machine, options) => checkoutReadiness(machine, options),
 };
 
@@ -333,22 +337,43 @@ function cachedFetch(machine, cwd, branch) {
   return promise;
 }
 
-const readinessCache = new Map();   // machine, checkout, repo, base -> { at, promise }
+const readinessCache = new Map();   // machine, checkout, repo, base -> { at, promise, pending, outlived }
 
 /**
- * The checkout check fetches, so while the dialog polls a "ready" is trusted
- * as long as a branch fetch is. Anything else is asked again, so a checkout
- * somebody just fixed shows at once; so is a `fresh` one, right before a move.
+ * The checkout check fetches, so while the dialog polls a check under way is
+ * joined, and a "ready" is trusted as long as a branch fetch is. Anything else
+ * is asked again, so a checkout somebody just fixed shows at once, unless the
+ * dialog stopped waiting for it (`outlived`): then the answer is kept for a
+ * later poll to read. A `fresh` check, right before a move, is always its own.
  */
 function targetReadiness(machine, options, fresh) {
   const key = [machine.name, machine.repoPath, options.repo, options.baseBranch].join('\0');
   const hit = readinessCache.get(key);
-  if (!fresh && hit && Date.now() - hit.at < FETCH_TTL_MS) return hit.promise;
-  const promise = Promise.resolve().then(() => moveHooks.checkoutReadiness(machine, options));
-  readinessCache.set(key, { at: Date.now(), promise });
-  const forget = () => { if (readinessCache.get(key)?.promise === promise) readinessCache.delete(key); };
-  promise.then((state) => { if (!state.ready) forget(); }, forget);
-  return promise;
+  if (!fresh && hit && (hit.pending || Date.now() - hit.at < FETCH_TTL_MS)) return hit;
+  const promise = Promise.resolve().then(() => moveHooks.checkoutReadiness(
+    machine, { ...options, fetchTimeoutMs: moveHooks.checkoutFetchMs },
+  ));
+  const entry = { at: Date.now(), promise, pending: true, outlived: false };
+  readinessCache.set(key, entry);
+  const settled = (ready) => {
+    entry.pending = false;
+    entry.at = Date.now();
+    if (!ready && !entry.outlived && readinessCache.get(key) === entry) readinessCache.delete(key);
+  };
+  promise.then((state) => settled(state.ready), () => settled(false));
+  return entry;
+}
+
+const STILL_CHECKING = Symbol('still checking');
+
+/** The answer of `entry`, or `STILL_CHECKING` after `ms`: the check goes on. */
+function readinessWithin(entry, ms) {
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => { entry.outlived = entry.pending; resolve(STILL_CHECKING); }, ms);
+    timer.unref?.();
+  });
+  return Promise.race([entry.promise, expired]).finally(() => clearTimeout(timer));
 }
 
 const sizeCache = new Map();    // `${machine}\0${path}` -> { at, promise }
@@ -454,9 +479,15 @@ async function inspectTarget(task, to, { fetchFn = cachedFetch, fresh = false } 
         out.noCheckout = machine.repoPath;
         return out;
       }
-      // Not on the probe's leash, for the same reason as the branch fetch below:
-      // this fetches, and its git calls have their own time limits.
-      const state = await targetReadiness(machine, { repo: projectRepo(task.project), baseBranch: baseBranchOf(task.project) }, fresh);
+      // Not an unreachable box if slow, for the same reason as the branch fetch
+      // below: this fetches. The move waits it out, within the fetch's limit;
+      // the dialog does not, and asks again on its next poll.
+      const check = targetReadiness(machine, { repo: projectRepo(task.project), baseBranch: baseBranchOf(task.project) }, fresh);
+      const state = fresh ? await check.promise : await readinessWithin(check, moveHooks.probeMs);
+      if (state === STILL_CHECKING) {
+        out.checking = true;
+        return out;
+      }
       if (!state.ready) {
         if (state.code === 'missing') out.noCheckout = machine.repoPath;
         else out.notReady = state.reason;
@@ -565,6 +596,10 @@ function blockersFrom(task, to, source, target, { discardTargetLocal = false, re
   if (target.noCheckout) {
     add('project_not_prepared',
       `The project "${task.project}" is not on ${to} yet: nothing at ${target.noCheckout}. Use Prepare to clone it there and install its dependencies`);
+    return blockers;
+  }
+  if (target.checking) {
+    add('checkout_checking', `The checkout of "${task.project}" on ${to} is still being checked (its git fetch has not answered yet): this updates by itself`);
     return blockers;
   }
   if (target.notReady) {

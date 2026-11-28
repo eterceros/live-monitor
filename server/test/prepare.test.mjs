@@ -162,9 +162,10 @@ test('one queue per machine: the same project joins the run in flight, another o
   const same = await startPrepare('devbox', 'ehr');
   assert.ok(live(same), same.status);
 
-  const other = await startPrepare('devbox', 'notes');
-  assert.equal(other.status, 'queued');
-  assert.equal(other.step, 'queued');
+  assert.ok(live(await startPrepare('devbox', 'notes')));
+  for (let i = 0; i < 200 && prepareStatus('devbox', 'notes').status !== 'queued'; i += 1) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(prepareStatus('devbox', 'notes').status, 'queued');
+  assert.equal(prepareStatus('devbox', 'notes').step, 'queued');
   assert.ok(!box.made.includes('/home/zoe/src/EHR-wt'), 'no worktree root before the checkout is ready');
 
   release();

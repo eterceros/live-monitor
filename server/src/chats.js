@@ -303,21 +303,28 @@ export function renderSiblings({ busy = [], commits = [], files = [], me = '' } 
 /**
  * A note left for the other conversations of a task, to be handed to each of
  * them the next time they are about to touch a file. Kept in memory only for as
- * long as it takes to deliver: what matters is arriving fresh.
+ * long as it takes to deliver: what matters is arriving fresh. `commits` are the
+ * ones the note is about, as `git log --oneline` lines.
  */
-export function tellSiblings(task, fromChatId, text) {
+export function tellSiblings(task, fromChatId, text, commits = []) {
   for (const chat of chatsOf(task)) {
     if (chat.id === fromChatId) continue;
-    chat.news = [...(chat.news ?? []), text];
+    chat.news = [...(chat.news ?? []), { text, commits }];
   }
 }
 
-/** Takes what a chat has pending to hear, and empties the queue. */
-export function drainNews(chat) {
+/**
+ * Takes what a chat has pending to hear, and empties the queue. `told` are the
+ * commits the chat is hearing about some other way: a note about nothing but
+ * those is dropped unsaid.
+ */
+export function drainNews(chat, told = []) {
   const news = chat?.news ?? [];
   if (!news.length) return '';
   chat.news = [];
-  return news.join('\n');
+  const heard = new Set(told);
+  return news.filter((n) => !(n.commits?.length && n.commits.every((c) => heard.has(c))))
+    .map((n) => n.text ?? n).join('\n');
 }
 
 /**

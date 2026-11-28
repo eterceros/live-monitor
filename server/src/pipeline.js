@@ -6005,12 +6005,13 @@ async function changesSince(machine, wtPath, sha) {
  */
 async function siblingsBriefing(task, chat) {
   const { commits, files } = await changesSince(machineOf(task), task.worktreePath, chat.lastSeenSha);
-  return renderSiblings({
+  const text = renderSiblings({
     me: chat.title,
     busy: busySiblings(task, chat.id),
     commits,
     files,
   });
+  return { text, commits };
 }
 
 /**
@@ -6115,6 +6116,12 @@ const liveKey = (ownerKey, chatId) => `${ownerKey}:${chatId}`;
  * (`token.stop()`): there is no session turn to interrupt yet.
  */
 const starting = new Map();
+
+/** The token of a turn of this chat whose prompt has not gone out yet, or null. */
+function preparingTurn(key) {
+  const token = starting.get(key);
+  return token && !token.sent ? token : null;
+}
 
 /** A project chat's owner (a «holder») is task-shaped but is not a task: `kind` is the one discriminator. */
 const isHolder = (owner) => owner?.kind === 'project';
@@ -7563,8 +7570,10 @@ function onChatEvent(task, chat, live, ev) {
         forgetOpencodeCalls(live);
         dropIfEmpty(task, chat, live.activity);
         live.activity = null;
-        chat.busy = false;
-        chat.activity = null;
+        // A message still on its way keeps the chat busy, so it can be stopped.
+        const waiting = preparingTurn(liveKey(ownerKeyOf(task), chat.id));
+        chat.busy = Boolean(waiting);
+        chat.activity = waiting ? 'starting the session…' : null;
         store.touch(task);
         refreshAfterChat(task);
       }
@@ -7643,7 +7652,8 @@ function onChatEvent(task, chat, live, ev) {
       // and no error of ours: without this the chat stayed «working» for
       // good, with Stop refusing and every message parked (seen on #937).
       // A turn of ours is settled by `runTurn` itself.
-      if (chat.busy && !live.ownTurn) {
+      // Nor is one still on its way to the send, which opens a new process.
+      if (chat.busy && !live.ownTurn && !preparingTurn(liveKey(ownerKeyOf(task), chat.id))) {
         chat.busy = false;
         chat.activity = null;
         live.activity = null;
@@ -8024,6 +8034,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       store.touch(task);
     }
     let siblings = '';
+    let briefedCommits = [];   // what that briefing lists
     if (!command) {
       const waiting = [...(chat.notes ?? [])];
       ({ text, attachments, voice: turnVoice } = withNotes(task, chat, text, attachments, turnVoice));
@@ -8034,7 +8045,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
       };
       // What the siblings did while this chat was away, worked out now rather
       // than pre-cooked.
-      siblings = await siblingsBriefing(task, chat);
+      ({ text: siblings, commits: briefedCommits } = await siblingsBriefing(task, chat));
     }
     headBefore = await headCommit(machineOf(task), task.worktreePath);
 
@@ -8065,7 +8076,12 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
     // `await` from here to the send.
     if (startToken.stopped) return;
     startToken.sent = true;
-    if (!command) drainNews(chat);   // the briefing above already covers everything until now
+    // What the briefing lists is told. Any other notice still pending (it came
+    // after the briefing was built, or no tool call ever delivered it) goes too.
+    if (!command) {
+      const untold = drainNews(chat, briefedCommits);
+      if (untold) siblings += `\n\n[Aviso del tablero]\n${untold}`;
+    }
 
     // The turn's tree goes right after the prompt that started it, stamped
     // with the machine whose transcripts it will point at.
@@ -8210,7 +8226,7 @@ async function runTurn(task, chat, text, attachments = [], opts = {}) {
         tellSiblings(task, chat.id, `La conversación «${chat.title}» acaba de commitear ${commits.length} cambio(s) en esta rama`
           + (files.length ? `, tocando:\n${files.slice(0, 15).map((f) => `- \`${f}\``).join('\n')}`
             + (files.length > 15 ? `\n- …y ${files.length - 15} más` : '')
-            + '\n\nRelee con Read cualquiera de esos archivos antes de editarlo.' : '.'));
+            + '\n\nRelee con Read cualquiera de esos archivos antes de editarlo.' : '.'), commits);
       }
     } catch (e) {
       store.addLog(task, 'chat', `⚠️ could not read what the turn of «${chat.title}» left (${reasonOf(e)})`);
@@ -8598,21 +8614,26 @@ export async function interruptChat(issue, chatId) {
   const lk = liveKey(ownerKeyOf(task), chat.id);
   const live = liveChats.get(lk);
   if (!chat.busy) throw new Error('That chat has no turn in progress');
-  // Still preparing (a clone can take minutes): there is no session turn to
-  // interrupt, and an idle process being up would not keep the prompt from it.
-  const preparing = starting.get(lk);
-  if (preparing && !preparing.sent) {
+  // Still preparing (a clone can take minutes): the prompt is kept from the
+  // session here, as interrupting an idle process would not do it.
+  const preparing = preparingTurn(lk);
+  if (preparing) {
+    // The process may have started a turn of its own meanwhile (a background
+    // command finished): that one is running, and is interrupted below.
+    const ownWork = Boolean(live?.session.alive && live.session.selfTurn);
     preparing.stop();
     if (live) live.ownTurn = false;
-    chat.busy = false;
-    chat.activity = null;
     const cloning = isHolder(task)
       && checkoutsBusy().some((j) => j.machine === task.machine && j.project === task.project);
     store.addChat(task, chat.id, 'assistant', '⏹️ Turn stopped by the user before it started: the message was not sent.'
       + (cloning ? ' The checkout of the project goes on in the background.' : '')
       + ((chat.notes ?? []).length ? ' What was still waiting goes with your next message.' : ''));
-    store.touch(task);
-    return;
+    if (!ownWork) {
+      chat.busy = false;
+      chat.activity = null;
+      store.touch(task);
+      return;
+    }
   }
   if (!live?.session.alive) {
     // «Working» with no process behind it: a leftover. Stop means stop —
